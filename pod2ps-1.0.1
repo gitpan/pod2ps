@@ -1,0 +1,3037 @@
+#!/public/bin/perl5 --w  --  # -*-Perl-*-
+#############################################################################
+#
+# Filename:     pod2ps
+#
+# Copyright (c) 1996 Alan Fry and Jim Pravetz. All rights reserved. This
+#		program is free software; you can redistribute it and/or
+#		modify it under the same terms as Perl itself.
+#
+# Description:  Code written by Alan Fry (ajf@afco.demon.co.uk)
+#		and Jim Pravetz (jpravetz@adobe.com).  Documentation can be
+#		found at the end of this file.  Report all bugs to
+#		ajf@afco.demon.co.uk
+#
+# Update History: (most recent first)
+#    J. Pravetz   7-Aug-96 10:48 -- Allow level0 bookmarks under level2 bookmarks
+#    J. Pravetz  26-Jul-96 10:29 -- v1.0rc2. Added $output_check, and pdfCatalog()
+#    A. J. Fry   25-Jul-96 18:00 -- text lines indented by leading spaces/tabs
+#    A. J. Fry   24-Jul-96 16:00 -- Modifications to TAB handling
+#    J. Pravetz  17-Jul-96 15:05 -- v1.0rc1 (release candidate version 1)
+#    J. Pravetz  16-Jul-96 11:45 -- Fixes to ps dict, text colours
+#    A. J. Fry   16-Jul-96 14:00 -- Fix linkBB(), ps stack errors, prt(), just()
+#    J. Pravetz  12-Jul-96 15:59 -- Minor fixes
+#    J. Pravetz   6-Jul-96 22:48 -- Added color to links, general fixes
+#    A. J. Fry   01-Jul-96 12:00 -- BoundingBox for L<> and F<> strings added
+#    J. Pravetz  27-Jun-96 15:38 -- Changes to parseConfig. Replaced stdUsage()
+#    A. J. Fry   21-Jun-96 12:00 -- Font re-encoding and tab decoding revised
+#    J. Pravetz  19-Jun-96 14:14 -- Fixed escaping of characters to ps file
+#    A. J. Fry   18-Jun-96 12:36 -- Font encoding changed to ISOLatin1
+#    J. Pravetz  15-Jun-96 20:04 -- Added links, cover page and ToC
+#    A. J. Fry   12-Jun-96 04:31 -- Style and link fixes
+#    J. Pravetz   9-Jun-96 15:33 -- Working bookmarks and article threads
+#    J. Pravetz   7-Jun-96 16:40 -- Added config file support
+#    J. Pravetz   3-Jun-96 16:17 -- Modified for unix from Alan Fry source
+#
+#############################################################################
+$last_modified = "D:19960807104830-07\'00\'"; # This line automatically generated
+$version = 'v1.0.1 ' . $last_modified;
+
+#############################################################################
+# Default variables (these variables are those that might be altered by command
+# line or configuration file parsing).
+#############################################################################
+
+# Files
+$cfname = undef;		# Config file
+@iflist = ();                   # List of files to parse
+$ofname = '>-';                 # Default to STDOUT
+
+# Control
+$k_max = 5;                     # if $k > $k_max the line is not justified
+$dry_run = 0;                   # If 1 then do not actually parse pod or produce output
+$output_check = 0;		# If 1 then do not produce output if output file already exists
+$cover = 0;                     # Set to 1 if a cover page is required
+$start_page = 1;                # start page number
+$verbose = 1;                   # Output progress to STDERR
+$larry = 1;                     # Output Larry Wall quote on cover page
+$duplex = 1;                    # 1=double sided pager, 0=single sided
+$pdf_article = 0;               # if 1 then bookmarks for pod files jump to article threads
+$do_toc = -1;                   # Generate a ToC at the end of the ps output
+# $do_index = undef;              # optional index
+my @bktop = ();                 # list of top level bookmarks
+my %bkactive;                   # array of current bookmarks at each $hdrlevel
+$bkon{-2} = $bkon{-1} = $bkon{0} = $bkon{1} = $bkon{2} = $bkon{3} = 1;
+                                # Enable bookmarks at all levels
+@linkList = ();                 # List of all links that must be resolved at end
+undef(%named_dest);             # List of all Named Destinations that have been created
+$one_word_item = 0;		# If 1 then strip =item title to first word for use in bookmarks
+$link_boxtype = 4;		# If bit 1 then draw a PostScript box around links
+				# If bit 2 then turn on PDF border. If bit 3 then text is blue.
+
+# titles and strings
+$current_title = undef;         # Must be defined for every pod file (used for PDF)
+$mid_title = undef;
+$out_title = undef;             # Used for in(out)side header titles, and usually
+$in_title = undef;              #   derived from $current_title
+$official_false = 'User Contributed Perl Documentation';
+$official_true = 'Perl Programmers Reference Guide';
+$book_title = $official_false;	# This is the book title
+$mid_footer = undef;            # Used in footers (defaults to undef)
+$pdf_creator = "pod2ps $version";
+
+# Page dimensions
+$xsize = 612;                   # default page-size (width)
+$ysize = 792;                   # default page-size (height)
+$inside_margin = 72;            # Inside page margin
+$outside_margin = 72;           # outside page margin
+$top_margin = 72;               # top page margin for body text
+$bottom_margin = 72;            # bottom page margin for body text 
+$top_bar = 50;                  # distance from top of page to header bar
+$bottom_bar = 50;               # distance from bottom of page to footer bar
+$left_indent = 30;              # Amount by which to indent everything but H1 and H2
+$leading = 1.2;                 # multiply by current fontsize to get line spacing
+$paragraph_space = 0.5;         # multiply by line spacing to get space between paragaphs            
+$tab_per_char = 6;              # points per character multiplier for tab stops
+$heading_lift = 0.2;            # multiply by line spacing to get extra space under heading            
+$index_indent = 20;             # Amount to indent for every new level of ToC
+
+# Set font for various parts of document.
+# Recognised Fonts: Times, Helvetica, Courier
+# Recognised Styles: Regular, Bold, Oblique, BoldOblique
+%setStyles = (
+              'H1' => [ 10, 'Helvetica', 'Bold' ],
+              'H2' => [ 10, 'Helvetica', 'Bold' ],
+              'H3' => [ 10, 'Helvetica', 'Regular' ],
+              'Body' => [ 10, 'Times', 'Regular' ],
+              'Verbatim' => [ 10, 'Courier', 'Regular' ],
+              'header' => [ 10, 'Helvetica', 'Bold' ],
+              'footer' => [ 10, 'Helvetica', 'Bold' ],
+              'CoverTitle' => [ 26, 'Helvetica', 'Bold' ],
+              'Cover1' => [ 14, 'Helvetica', 'Bold' ],
+              'Cover2' => [ 12, 'Times', 'Oblique' ],
+              'Cover3' => [ 12, 'Times', 'BoldOblique' ],
+              );
+
+# Set font style of some types of embedded strings (1=bold,2=italic,3=bolditalic)
+%fontstyle = (
+	      'link' => 2,
+	      'file' => 3,
+	      );
+# Define colors to use for text and links
+%colorstyle = (
+	       'link' => '0 0 0.8 setrgbcolor',
+	       'text' => '0 setgray'
+	       );
+                        
+#############################################################################
+# Code below not to be altered by command line or command file parsing
+#############################################################################
+
+# Font mapping used in PostScript file
+%fontdef = (
+            'Times-Roman-New'           => '00',
+            'Times-Bold-New'            => '01',
+            'Times-Italic-New'          => '02',
+            'Times-BoldItalic-New'      => '03',
+            'Courier-New'               => '10',
+            'Courier-Bold-New'          => '11',
+            'Courier-Oblique-New'       => '12',
+            'Courier-BoldOblique-New'   => '13',
+            'Helvetica-New'             => '20',
+            'Helvetica-Bold-New'        => '21',
+            'Helvetica-Oblique-New'     => '22',
+            'Helvetica-BoldOblique-New' => '23'
+            );
+
+
+#############################################################################
+# Platform specific command-line parsing. For platforms with no
+# command-line interface this can be modified using apropriate dialog
+# boxes. The variables that can be modified are those that appear in
+# the first section of this program.
+#############################################################################
+
+( $command = $0 ) =~ s/.*\///;
+
+sub stdUsage {
+    my $terminate = shift;
+    my $command = shift;
+    print STDERR "Usage: $command [options] input_filename [input_filename+]\n";
+    print STDERR "    Description:\n";
+    print STDERR "        Converts (multiple) pod files to PostScript, with support for \n";
+    print STDERR "        PDF operators.\n";
+    print STDERR "    where options are :\n";
+    print STDERR "        -c filename : Read command file\n";
+    print STDERR "        -o filename : Name of PostScript output file [default STDOUT]\n";
+    print STDERR "        -t title : Title of output file (used in headers and PDF info entry)\n";
+    print STDERR "        -f footer : String to use in centre of running footers\n";
+    print STDERR "        -noduplex : Turn off duplex (double-sided) output\n";
+    print STDERR "        -start \# : Specify start page [defaults to 1]\n";
+    print STDERR "        -x \# : Width of page in points [default points 612]\n";
+    print STDERR "        -y \# : Width of page in points [default points 792]\n";
+    print STDERR "        -d : Set verbose level (debug level) [default to 1]\n";
+    print STDERR "        -v : Print version information\n";
+    print STDERR "        -n : Do not parse pod or produce output (use to verify command file)\n";
+    print STDERR "        -shortitem : Use only first word of item title for bookmark titles\n";
+    print STDERR "        -toc \# : Generate a ToC to \# levels at end of PostScript output\n";
+    print STDERR "        -h : Print this help message\n";
+    exit(0) if $terminate;
+}
+
+while ($ARGV[0] =~ /^-/) {
+    $_ = shift ;
+    if( /^-o$/ ) {
+        $ofname = shift;
+    } elsif( /^-c$/ ) {
+        $cfname = shift;
+    } elsif( /^-toc$/ ) {
+       $do_toc = 3;
+    } elsif( /^-t$/ ) {
+        $book_title = shift;
+	$book_title = psEscape($book_title);
+    } elsif( /^-f$/ ) {
+        $mid_footer = shift;
+	$mid_footer = psEscape($mid_footer);
+    } elsif( /^-noduplex/ ) {
+        $duplex = 0;
+    } elsif( /^-start$/ ) {
+        $sp = shift;
+    } elsif( /^-x$/ ) {
+        $xsize = shift;
+    } elsif( /^-y$/ ) {
+        $ysize = shift;
+    } elsif( /^-d$/ ) {
+        $verbose = shift;
+    } elsif( /^-v$/ ) {
+        print STDERR "    $command: $version\n";
+        exit 0;
+    } elsif( /^-shortitem$/ ) {
+        $one_word_item = 1;
+    } elsif( /^-n$/ ) {
+        $dry_run = 1;
+    } elsif (/^-h(.*)/) {
+        stdUsage(1,$command);
+    } else {
+        print STDERR "Unrecognized switch: $_\n";
+        stdUsage(1,$command);
+    }
+}
+
+@iflist = @ARGV;
+
+#############################################################################
+# Should be the end of platform specific command line parsing.
+# Now initialise and process files
+#############################################################################
+
+# Initialise before beginning to read or write files
+
+&ESC;                           # initialise escapes
+afm();                          # Initialise fonts
+$start_time = (times)[0];       # Measure duration of processing
+$date_footer = datestr(time,3);
+$pdf_date = datestr(time,0);
+$pdf_author = $ENV{'USER'};
+$page = $start_page;
+
+if( $dry_run ) {
+    print STDERR "THIS IS A DRY RUN\n";
+    print STDERR "Input files only partially parsed.\nNo output being produced\n";
+}
+
+# If a configuration file has been specified then read that file and
+# use is to generate output.
+
+if( defined($cfname) ) {
+    parseCommandFile( $cfname );
+
+# Otherwise loop through the list of files specified
+    
+} else {
+
+    if( $dry_run ) {
+        print STDERR "Use -n option only with config file\n";
+        std_usage( 1, $command, '', $description, @options );
+    }
+
+    scalar(@iflist) || die "ERROR: No input files specified\n";
+
+    # Now generate output files and process input files
+
+    psOpen( $ofname, $xsize, $ysize );
+    pageParity();
+
+    foreach $ifname ( @iflist ) { parsePod( $ifname ) }
+    makeToC(0,$do_toc) if $do_toc >= 0;
+}
+
+# Close everything off
+
+psClose();
+
+$finish = (times)[0];
+printf( STDERR "PostScript generation complete (duration = %4.2f sec)\n", $finish - $start_time )
+    if $verbose;
+
+exit 0;				# done
+
+
+#############################################################################
+# CONFIGURATION FILE PARSING - Code by Jim Pravetz
+#############################################################################
+
+# Parse a configuration file. See pod2ps.pod for details on valid
+# configuration file syntax.
+
+sub parseCommandFile {
+    my $cfname = shift;
+
+    open( CFILE, "<$cfname" ) || die "Could not read configuration file '$cfname': $!\n";
+    print STDERR "Reading configuration file $cfname\n" if $verbose;
+
+    my $cmd;
+    my @p;
+    my $stream_open = 0;
+    while( <CFILE> ) {
+
+        s/\#.*$//;              # remove comments
+        next if /^\s*$/;        # skip blank lines
+        s/^\s+//;               # remove leading whitespace
+
+        # Split parameters on a line and put into ( $cmd, @p )
+        @p = ();
+        while( !(m/^$/) ) {
+            if( s/^\'([^\']*)\'\s*// ) {
+                push( @p, $1 );
+	    } elsif( s/^\"([^\"]*)\"\s*// ) {
+                push( @p, $1 );
+            } else {
+                s/^(\S+)\s*//;
+                push( @p, $1 );
+            }
+        }
+        $cmd = shift( @p );
+        $cmd =~ tr/A-Z/a-z/;
+
+        # Switch on command ($cmd)
+
+        if( $cmd eq 'path' ) {
+            _configParamCheck( 1, 1, @p );
+            ( -d $p[0] && chdir( $p[0] ) ) ||
+                _configErr( "Invalid path $p[0]" );
+
+        } elsif( $cmd eq 'file' ) {
+            _configParamCheck( 1, 4, @p );
+	    $stream_open || _configErr( "Cannot use command '$cmd' before command 'output'" );
+            -r $p[0] || _configErr( "Cannot read file $p[0]" );
+	    if( scalar(@p) == 4 ) {
+		$mid_title = ($p[1] eq '')?$book_title:psEscape($p[1]);
+		$in_title = ($p[2] eq '')?undef:psEscape($p[2]);
+		$out_title = ($p[3] eq '')?undef:psEscape($p[3]);
+	    } elsif( scalar(@p) == 2 ) {
+		$mid_title = $book_title;
+		$in_title = $out_title = ($p[1] eq '')?undef:psEscape($p[1]);
+	    } elsif( scalar(@p) == 1 ) {
+		$mid_title = $book_title;
+		$in_title = $out_title = undef; # to be determined
+	    } else {
+		_configErr( 'Illegal number of parameters used with file command' );
+	    }
+            parsePod( $p[0] );
+
+        } elsif( $cmd eq 'cover' ) {
+            $cover = _configTrueFalse( @p );
+
+        } elsif( $cmd eq 'output' ) {
+            _configParamCheck( 1, 1, @p );
+            !$stream_open || _configErr( "Output file has already been specified" );
+            $ofname = $p[0];
+            psOpen();
+            coverPage() if $cover;
+            pageParity();
+            ++$stream_open;
+
+        } elsif( $cmd eq 'toc' ) {
+            _configParamCheck( 0, 1, @p );
+            $do_toc = $p[0]?$p[0]:0;
+            $do_toc == 0 || $do_toc == 1 || $do_toc == 2 || $do_toc == 3 ||
+                _configErr( 'Index value must be in range 0 to 3' );
+            makeToC( 0, $do_toc );
+
+        } elsif( $cmd eq 'index' ) {
+            _configParamCheck( 0, 0, @p );
+            makeToC( 1, 3 );
+
+        } elsif( $cmd eq 'startpage' ) {
+            _configParamCheck( 1, 1, @p );
+            !$stream_open || _configErr( "Cannot use command $cmd after output file is opened" );
+            $start_page = $p[0]; # this could be undef
+            $start_page => 1 || _configErr( 'Start page must be >= 1' );
+            $page = $start_page;
+
+        } elsif( $cmd eq 'booktitle' ) {
+            _configParamCheck( 0, 1, @p );
+            $book_title = $p[0]?psEscape($p[0]):'';
+
+        } elsif( $cmd eq 'official' ) {
+            if( _configTrueFalse( @p ) ) {
+                $book_title = $official_true;
+            } else {
+                $book_title = $official_false;
+            }
+
+        } elsif( $cmd eq 'release' ) {
+            _configParamCheck( 0, 1, @p );
+            $mid_footer = $p[0]?psEscape($p[0]):'';
+
+        } elsif( $cmd eq 'beginbookmark' ) {
+            _configParamCheck( 1, 2, @p );
+            if( $p[1] ) {
+                ( $p[1] == 1 || $p[1] == 2 ) || _configErr( 'Bookmark level must be 1 or 2' );
+                $current_bookmark = -$p[1];
+            } else {
+                $current_bookmark = -1;
+            }
+            pdfBookmark( $current_bookmark, $p[0], $page-$start_page+1, $ysize );
+
+        } elsif( $cmd eq 'endbookmark' ) {
+            _configParamCheck( 0,0, @p );
+            if( $current_bookmark == -2 ) {
+                pdfClearBookmark( $current_bookmark );
+                $current_bookmark = 0;
+            } elsif( $current_bookmark == -1 ) {
+                if( defined($bkactive{-2}) ) {
+                    $current_bookmark = -2;
+                } else {
+                    $current_bookmark = 0;
+                }
+                pdfClearBookmark( -1 );
+            } else {
+                _configErr( 'No beginBookmark has been defined for current bookmark level' );
+            }
+
+        } elsif( $cmd eq 'bookmark' ) {
+            _configParamCheck( 2,2, @p );
+            if( $p[1] eq 'on' ) {
+                $p[1] = 1;
+            } elsif( $p[1] eq 'off' ) {
+                $p[1] = 0;
+            } else {
+                _configErr( 'Second parameter must be on | off' );
+            }
+            if( $p[0] eq 'head1' ) {
+                $bkon{1} = $p[1];
+            } elsif( $p[0] eq 'head2' ) {
+                $bkon{2} = $p[1];
+            } elsif( $p[0] eq 'item' ) {
+                $bkon{3} = $p[1];
+            } else {
+                _configErr( 'Parameter error' );
+            }       
+
+        } elsif( $cmd eq 'author' ) {
+            _configParamCheck( 0, 1, @p );
+            !$stream_open || _configErr( "Cannot use command $cmd after output file is opened" );
+            $pdf_author = $p[0]?$p[0]:undef;
+
+        } elsif( $cmd eq 'subject' ) {
+            _configParamCheck( 0, 1, @p );
+            !$stream_open || _configErr( "Cannot use command $cmd after output file is opened" );
+            $pdf_subject = $p[0]?$p[0]:undef;
+
+        } elsif( $cmd eq 'keywords' ) {
+            _configParamCheck( 0, 1, @p );
+            !$stream_open || _configErr( "Cannot use command $cmd after output file is opened" );
+            $pdf_keywords = $p[0]?$p[0]:undef;
+
+        } elsif( $cmd eq 'duplex' ) {
+            !$stream_open || _configErr( "Cannot use command $cmd after output file is opened" );
+            $duplex = _configTrueFalse( @p );
+
+        } elsif( $cmd eq 'verbose' ) {
+            _configParamCheck( 1, 1, @p );
+	    $verbose = $p[0];
+
+        } elsif( $cmd eq 'oneworditem' ) {
+            $one_word_item = _configTrueFalse( @p );
+
+        } elsif( $cmd eq 'linkbox' ) {
+	    foreach $p (@p) {
+		if( $p eq 'off' ) {
+		    $link_boxtype = 0;
+		} elsif( $p eq 'ps' ) {
+		    $link_boxtype |= 1;
+		} elsif( $p eq 'pdf' ) {
+		    $link_boxtype |= 2;
+		} elsif( $p eq 'color' ) {
+		    $link_boxtype |= 4;
+		} else {
+		    _configErr( "Illegal parameter $p" );
+		}
+	    }
+
+        } elsif( $cmd eq 'dryRun' ) {
+            $dry_run = _configTrueFalse( @p );
+
+	# If a user mucks around with page and margin sizes then it is the user's duty
+	# to ensure they are using reasonable values (limited checking is done by pod2ps).
+
+        } elsif( $cmd eq 'pagesize' ) {
+	    if( scalar(@p) == 1 ) {
+		if( $p[0] =~ /^usletter$/i ) {
+		    $xsize = 612;
+		    $ysize = 792;
+		} elsif( $p[0] =~ /^a4$/i ) {
+		    $xsize = 595;
+		    $ysize = 842;
+		} else {
+		    _configErr( 'If one parameter is specified for $cmd then it must be either USLetter or A4' );
+		}
+	    } elsif( scalar(@p) == 2 ) {
+		( $xsize, $ysize ) = @p;
+		$xsize > 200 || _configErr( 'X page dimension must be > 200' );
+		$ysize > 300 || _configErr( 'X page dimension must be > 300' );
+	    } else {
+		_configErr( '$cmd requires 1 or 2 parameters' );
+	    }
+
+        } elsif( $cmd eq 'margin' ) {
+            _configParamCheck( 2,2, @p );
+            $p[1] =~ /^\d+$/ || _configErr( 'Illegal parameter' );
+            if( $p[0] eq 'inside' ) {
+                $inside_margin = $p[1];
+            } elsif( $p[0] eq 'outside' ) {
+                $outside_margin = $p[1];
+            } elsif( $p[0] eq 'top' ) {
+                $top_margin = $p[1];
+            } elsif( $p[0] eq 'bottom' ) {
+                $bottom_margin = $p[1];
+            } elsif( $p[0] eq 'topbar' ) {
+                $top_bar = $p[1];
+            } elsif( $p[0] eq 'bottombar' ) {
+                $bottom_bar = $p[1];
+            } else {
+                _configErr( 'Illegal parameter' );
+            }
+
+        } else {
+            die "Unrecognised command '$cmd' on line $. of file $cfname\n";
+        }
+
+    }
+    close CFILE;
+}
+
+sub _configTrueFalse {
+    # Checks that paramater is either true or false, and returns 1 or 0, or dies
+    _configParamCheck( 1,1, @_ );
+    if( $_[0] =~ /^true/ ) {
+        1;
+    } elsif( $_[0] =~ /^false/ ) {
+        0;
+    } else {
+        _configErr( 'Parameter must be true or false' );
+    }
+}
+
+sub _configParamCheck {
+    my $lo = shift;
+    my $hi = shift;
+    if( scalar(@_) < $lo || scalar(@_) > $hi ) {
+        _configErr( 'Incorrect number of parameters' );
+    }
+}
+
+sub _configErr {
+    # Print error message associated with config file
+    die "ERROR: @_, line $. of $cfname\n";
+}
+
+
+#############################################################################
+# POD FILE PARSING AND OUTPUT - code by Alan Fry (with input from Jim)
+#############################################################################
+
+sub parsePod {
+    my $ifname = shift;
+
+    if( !open(IN, "<$ifname") ) {
+        print STDERR "WARNING: Could not read file $ifname. Skipping\n";
+        return 0;
+    }
+
+    # Make title from file name
+    $current_title = $ifname;
+    $current_title =~ s/^.*\://g;
+    $current_title =~ s/^.*\///g;
+    $current_title =~ s/\.[^\.]*$//;
+    $current_title = psEscape($current_title);
+
+    # If inside and outside titles are not defined then set to $current_title
+    $in_title = $current_title if !defined($in_title);
+    $out_title = $current_title if !defined($out_title);
+    $mid_title = $book_title if !defined($mid_title);
+
+    my $pod_found = 0;          # Do not generate output unless the file has pod text
+    my $in_pod = 0;
+    while(<IN>) {
+        if ( /^=(back|over|head|item|pod)/ ) {
+            $in_pod = 1;
+            if( !$pod_found ) {
+                $pod_found = 1;
+                _initPod($ifname);           # do only if we find pod text in the file
+		        last if $dry_run;            # Not really processing file
+            }
+        }
+        next if !$pod_found;
+        if ( /^=cut/ ) {$in_pod = 0 };                    
+        if ( !$in_pod ) { next }             # Skip non-pod text.
+        if ( /^=pod/ ) { next };
+        if ( /^\s*$/ ) { $more = 0 } else { $more = 1 }
+        if ( /^=over.*/ ) { &IND($_); next }          # indent
+        if ( /^=back/ ) { &BAK; next }                # cancel indent
+        if ( /^\s*\n/ ) { &BL; next }                 # blank line
+        if ( /(^\s+.*)$/ and !$in_text) { &VRB($1); next }         # verbatim txt
+        if ( /S</g ) { $_ = &HSP($_) }                # non-breaking-spaces
+       #$_ =~ s/"(.*?)"/\252$1\272/g;                 # convert double quotes
+        s/(\S*\(\))|([&\$]\S*)/C<$1$2>/g; 	          # convert variables and subs to code
+        s/\\([2-3][0-7][0-7])/chr(oct($1))/ge;        #convert octal to character
+        s/\'([^\s>\.\)])/\140$1/g;                    #convert single quotes
+        s/Z<.*?>//;                                   #zero-width character
+        s/--/\217/g;                                  #convert -- to emdash
+        s/B</\002/g;                                  #encode 'BOLD'
+        s/I</\003/g;                                  #encode 'ITALIC'
+        s/C</\004/g;                                  #encode constant-pitch font
+        s/F</\005/g;                                  #encode style for 'FILE'
+        if ($_ =~ /(L<[^>]*)\n/) { $store .= $` . $1 . " "; next }
+        $_ = $store.$_; $store = "";                  #mend broken links (if any)
+        if (/L</) { $_ = redoL($_) }                  #encode style for 'LINK'
+        s/>/\001/g;                                   #cancel last encoding
+        s/E<(.*?)\001/$HTML{$1}/g;                    #escape HTML entities
+        if ( /^=head1\s+(.*)$/) { &H1($1); next  }    #heading 1
+        if ( /^=head2\s+(.*)$/) { &H2($1); next }     #heading 2
+        if ( /^=item\s+(.*)$/) { &H3($1);&ZLF; next } #item heading
+        if ( /(^\s+.*)$/ ) { &TAB($1); next }         #tabbed text txt
+        #$in_text = 0;
+        chomp $_; &TXT($_);                           #anything else must be text
+    }
+
+    if( !$pod_found ) {
+        print STDERR "SKIPPING FILE: No pod text found in $ifname\n" if $verbose;
+        return 0;
+    }
+
+    if( $dry_run ) {
+	print STDERR "FILE OKAY: $ifname\n" if $verbose;
+	return;
+    }
+
+    $more = 0;
+    &just("\n");
+    $lp = $page;
+    $all_pages = $lp - $sp + 1;
+    &pageFooter;
+    $current_title = undef;     # set to undef to cause to be reresolved for next file
+    $in_title = $out_title = $midtitle = undef;
+    
+    ++$lp;                      # return last page + 1
+}
+
+sub _initPod {
+    my $ifname = shift;
+    # Executed only if pod text is found in the file
+    
+    print STDERR "Processing pod file $ifname\n" if $verbose;
+
+    pdfBookmark( 0, $current_title, $page-$start_page+1, undef );
+    $sp = $page;
+   
+    #initialise variables --
+    $in_verbatim = 0;                    # verbatim block flag (set to 1 in verbatim block)
+    $in_text = 0;                        # text block flag (set to 1 in text block)
+    $in_tab = 0;                         # set after an indented line in a text-block
+    $bl = 0;                             # blank line flag 
+    $zlf = 1;                            # zero line feed flag
+    $more = 0;                           # more to come (from file)
+    $j = $p = 0;                         # scratch-pad indeces
+    $jt[$j] = $pt[$p] = [0, 0];          # scratch-pad pointers
+    $sc[$p] = 'text';			 # scratch-pad color
+    setColor();
+    $ypos = $ysize - $top_margin;        # initialise Y position
+    &INIT;                               # initialise X margin position and tab settings
+    $yrem = $ypos;
+
+    pageHeader( );
+}
+
+#############################################################################
+
+sub redoL {
+    my $str = shift;
+    while($str =~ /L<(.*?)>/) {
+        my $one = $`;
+        my $two = $';
+        my $mid = $1;
+	my $linktype;
+
+	# Need to encode string in a way that can be uniquely decoded
+	# by linkBB().  First determine linktype by examining string
+	# within L<>. Then prepend linktype to string as an encoding
+	# character with value 16-20, where defined link types are: 16
+	# - manpage name, 17 - section in other manpage, 18 - item in
+	# local manpage, 19 - section in local manpage, 20 - URL
+
+	if( $mid =~ /^(\w+)\:(.+)$/ ) { # L<http:blah>
+	    $linktype = 20;
+	} elsif( $mid =~ /^(.+)\/\"(.+)\"$/ ) { # L<name/"sec">
+	    $mid = "$2 in $1";
+	    $linktype = 17;
+	} elsif( $mid =~ /^(.+)\/(.+)$/ ) { # L<name/ident>
+	    $mid = $2;
+	    $linktype = 18;
+	} elsif( $mid =~ /^\/\"(.+)\"$/ ) { # L</"sec">
+	    $mid = $2;
+	    $linktype = 19;
+	} elsif( $mid =~ /^\/\"(.+)\"$/ ) { # L<"sec">
+	    $mid = $2;
+	    $linktype = 19;
+	} else {
+	    $linktype = 16;
+	}
+        $mid =~ s/ /\240/g;	# substitute non breaking whitespace
+        $str = $one . chr(6) . chr($linktype) . $mid . '>' . $two;
+    }
+    if( $str =~ /L</ ) {	# check if previous line was not redundant
+	print STDERR "INTERNAL WARNING \#05: line contains L<: $str\n";
+    }
+    $str;
+}
+     
+sub H1 {
+    my $str = shift;
+    &just("\n");
+    setFont('H1');
+    if( $ypos <= ( $bottom_margin + $LF + 30 ) ) {
+        pageFooter();
+        pageHeader();
+        $zlf = 1;
+        $bl = 0;
+    } 
+    $j = $p = 0; $jt[0] = $pt[0] = [@scratch_pad];
+    $sc[$p] = 'text';
+    setColor();
+    &INIT;
+    $xpos = $left_margin;
+    pdfBookmark(1,$str,$page-$start_page+1,$ypos+$LF);
+    if ($bl) { $ypos -= $WS; $bl = 0 }
+    else { $ypos -= $LF + $WS }
+    &just($str);
+    $in_verbatim = $in_text = $in_tab = $bl = 0;
+    $zlf = 1;
+    &just("\n");
+    $xpos = $left_margin + $left_indent;
+    $was_H = 1;
+}
+
+sub H2 {
+    my $str = shift;
+    &just("\n");
+    setFont('H2');
+    if ($ypos <= ( $bottom_margin + $LF + 25 )) {
+        &pageFooter;
+        &pageHeader;
+        $zlf = 1;
+        $bl = 0;
+    } 
+    $j = $p = 0; $jt[0] = $pt[0] = [@scratch_pad];
+    $sc[$p] = 'text';
+    setColor();
+    &INIT;
+    $xpos = $left_margin;
+    pdfBookmark(2,$str,$page-$start_page+1,$ypos+$LF);
+    if ($bl) {  $ypos -= $WS; $bl = 0 }
+    else { $ypos -= $LF + $WS }
+    &just($str); 
+    $bl = $in_verbatim = $in_text = $in_tab = 0; $zlf = 1;
+    &just("\n");
+    $xpos = $left_margin + $left_indent;
+    $was_H = 1;
+}
+
+sub H3 {                  # =item
+    my $str = shift;
+    $str =~ s/^\s*\*/\007/g;	# bullet
+    &just("\n");
+    setFont('H3');
+    if ($ypos <= $bottom_margin + $LF + 20 ) {
+        &pageFooter;
+        &pageHeader;
+        $zlf = 1;
+        $bl = 0;
+    } 
+    $j = $p = 0; $jt[0] = $pt[0] = [@scratch_pad];
+    $sc[$p] = 'text';
+    setColor();
+    $xpos = $cLM;
+    if( $str ) {
+        my $tstr = $str;	# These regexp are inefficent. Fix later.
+        $tstr =~ s/[\000-\027]//g;
+        $tstr =~ s/^\s+//;
+        $tstr =~ s/\s+$//;
+	$tstr =~ m/^(\S+)/;	# Pass full title to pdfBookmark
+        pdfBookmark(3,$tstr,$page-$start_page+1,$ypos+$LF) if length($tstr);
+    }
+    if ( $bl ) { $ypos -= $WS; $bl = 0 }
+    else { $ypos -= $LF + $WS }
+    if ($yrem - $ypos == $LF + $WS and $was_H) { $ypos += $WS }
+    $in_verbatim = $in_text = $in_tab = $bl = 0;
+    $yrem = $ypos;
+    &just($str);
+    $was_H = 1;
+}
+
+sub IND {
+    $in_verbatim = $in_text = $in_tab = 0;
+    if( $_[0] =~ /^=over\s*(\d+)/ ) {
+        $tab = $1;
+    } else {
+        $tab = 4;
+    }
+    if ($set) { $cLM += $tab_per_char * $ov[$set] }
+    ++$set;                               # tab stop number (1, 2, 3, ...)
+    $ov[$set] = $tab;                     # tab indent for tab stop $set (in characters)
+    $indent = $tab_per_char * $ov[$set];  # current tab indent (in points)
+}
+
+sub BAK {
+    if (--$set < 0) { $set = 0 }
+    $cLM -= $tab_per_char * $ov[$set];
+    if ($cLM < $left_margin + $left_indent ) { $cLM = $left_margin + $left_indent }
+    $indent = 6 * $ov[$set];
+    if ($bl == 0) {
+        &just("\n");
+        $ypos -= $LF;
+        $bl = 1;
+        $in_verbatim = $in_text = $in_tab = 0;
+    }
+}
+
+sub INIT {
+    $set = 0;                             # tab position number
+    @ov = ();                             # tab position array
+    $cLM = $left_margin + $left_indent;   # current left margin (in points)
+    $indent = 0;                          # current indent (in points)
+}
+
+sub VRB { 
+    local ($_) = @_;
+    &just ("\n");
+    setFont('Verbatim') unless $in_verbatim;
+    if ($ypos <= ($bottom_margin + $LF) and $more) {
+        &pageFooter;
+        &pageHeader;
+        $bl = 0;
+    }
+    $j = $p = 0; $jt[0] = $pt[0] = [@scratch_pad];
+    $sc[$p] = 'text';
+    setColor();
+    $xpos = $cLM + $indent;
+    if ($was_H) { $ypos -= $uH; $was_H = 0 }
+    if ($bl) { $ypos -= $WS } 
+    else { $ypos -= $LF }
+    $in_verbatim = 1;
+    $bl = 0;
+    $in_text = $in_tab = 0;
+    $zlf = 1;
+    &just($_); 
+}
+
+sub TAB { 
+    local ($_) = @_;
+    &just ("\n");
+    setFont('Body') unless $in_tab;
+    if ($ypos <= ($bottom_margin + $LF) and $more) {
+        &pageFooter;
+        &pageHeader;
+        $bl = 0;
+    }
+    $j = $p = 0; $jt[0] = $pt[0] = [@scratch_pad];
+    $sc[$p] = 'text';
+    setColor();
+    $xpos = $cLM + $indent;
+    if ($was_H) { $ypos -= $uH; $was_H = 0 }
+    if ($bl) { $ypos -= $WS } 
+    else { $ypos -= $LF }
+    $bl = 0;
+    $zlf = 1;
+    $in_tab = 1;
+    &just($_); &just("\n");
+}
+
+sub TXT {
+    my ($txt) = @_;
+    if ($in_tab) { $in_text = $in_tab = 0 }
+    if ($in_text) { &just($txt); next }
+    if ($ypos <= ( $bottom_margin + $LF ) and $more and $zlf ) {
+        &pageFooter;
+        &pageHeader;
+        $bl = 0;
+    }
+    &just("\n");
+    setFont('Body');
+    $j = $p = 0; $jt[0] = $pt[0] = [@scratch_pad];
+    $sc[$p] = 'text';
+    setColor();
+    $xpos = $cLM + $indent;
+    if ($was_H) { $ypos -= $uH * $zlf; $was_H = 0 }
+    if ($bl) { $ypos -= $WS } 
+    else { $ypos -= $LF * $zlf; $zlf = 1 }
+    $in_text = 1;
+    $bl = $in_verbatim = 0;
+    &just($txt);
+} 
+
+sub BL { 
+    &just("\n");
+    if( $in_text ) {
+        $ypos -= $LF;
+        $in_text = 0;
+        $in_tab = 0;
+        $bl = 1;
+    } elsif( $in_verbatim ) {
+        $ypos -= $LF;
+        $in_verbatim = 0;
+        $bl = 1;
+    }
+}
+
+sub ZLF { 
+    if ($lineleng <= $indent - 2) { $zlf = 0 } 
+    else { $zlf = 1 } 
+}
+
+sub HSP {
+    my $str = shift;
+    my $new;
+    $str =~ s/S</S<\001/g;
+    foreach (split(/S</, $str)) {
+        if (/\001(.*)>(.*)/) {
+            my $a = $1;
+            my $b = $2;
+            $a =~ s/ /\240/g;
+            $new .= $a.$b;
+            next;
+        }
+        $new .= $_; 
+    }		
+    $new;
+}
+    
+sub just {
+    my $str = shift;
+    $str .= ' ';
+    my $used = 0;
+    $end = ($xsize - $right_margin);
+    if ($str =~ /\n/) {
+	    &prt($line, 0) if $line;
+	    &linkBB(2, 0) if $line;
+	    $line = "";
+	    $k = 0;
+	    $lineleng = 0;
+	    $spaces = 0;
+	    return;
+    } 
+    else {
+        foreach $word ( split( /([ \t])/, $str ) ) {
+            foreach ( split( //, $word ) ) {
+                if( / / ) { $tab_str = 0 }
+                if( /[\001-\006]/ ) { &REM($_); next; }
+                if( /\t/ ) {
+                    $tab_str = 1;
+		            &prt($line, 0) if $line;
+		            &linkBB(2, 0) if $line;
+		            $line = "";
+		            $k = 0;
+		            $used = (int($lineleng/48) + 1) * 48;
+		            $xpos += $used;
+		            $spaces = 0;
+		            $lineleng = 0;
+		            next;
+                }
+                if( $in_link ) { $link_string .= $_ }
+		        $wordleng += $wx[ $jt[$j][0] ][ $jt[$j][1] ][ord($_)]*$fs;
+            }
+            if ($lineleng + $wordleng <= ($end - $xpos) or $in_verbatim or $in_tab) {
+                $lineleng += $wordleng;
+                $wordleng = 0;
+                $line .= $word unless $word eq "\t";
+                $spaces++ if $word eq " ";
+            }
+            else {
+                $line =~ s/(.*\S)(\s*)$/$1/;
+                $lineleng -= 2.5 * length($2);
+                $spaces -= length $2; 
+                if ($spaces < 1) { $spaces = 1 }
+                $k = ($end - $xpos - $lineleng)/$spaces;
+                &prt($1, $k);
+                &linkBB(2, $k);
+                $ypos -= $LF;
+                if ($ypos <= $bottom_margin) { 
+                    &pageFooter; 
+                    &pageHeader; 
+                    $ypos -= 12;
+                    $used = 0;
+                }
+                if ( $word eq " " ) { $line = ""; $lineleng = 0 }
+                else { $line = $word; $lineleng = $wordleng }
+                $wordleng = 0; 
+                $spaces = 0;
+               #$xpos -= $used;
+                $used = 0;
+                if ($xpos != $cLM + $indent and $tab_str) { 
+                    $xpos = $cLM + $indent + 48; 
+                } else { $xpos = $cLM + $indent }
+            }
+        }
+    }
+}
+
+sub REM {
+    my $rem = shift;
+    if( $rem =~ /\001/ ) { 
+        if( $in_link ) { &linkBB(0, 0) } 
+        $j--; 
+        if ($j < 0) { $j = 0 } 
+    } 
+    else {
+	    $jt[$j+1] = [$jt[$j][0], $jt[$j][1]]; $j++;
+	    if ($rem =~ /\002/) { $jt[$j][1] = 1; }
+	    if ($rem =~ /\003/) { $jt[$j][1] = 2; }
+	    if ($rem =~ /\004/) { $jt[$j][0] = 1 }
+	    if ($rem =~ /\005/) { $jt[$j][1] = $fontstyle{file}; &linkBB(1, 5) } # File
+	    if ($rem =~ /\006/) { $jt[$j][1] = $fontstyle{link}; &linkBB(1, 6) } # Link
+    }
+}
+
+
+# sub linkBB - collects and processes information about links. The
+# information is stored line by line in a simple array @lk.
+
+# File and Link referneces are tagged:
+#     0 for F<> and L<> at the end of the link string
+#     5 for F<> -- $fontstyle{file}
+#     6 for L<> -- $fontstyle{link}
+# Links are additionally tagged:
+#    $linksubtype == 16 - manpage name 
+#    $linksubtype == 17 - section in other manpage,
+#    $linksubtype == 18 - item in local manpage 
+#    $linksubtype == 19 - section in local manpage
+
+# sub linkBB is effectively three quite separate subroutines rolled into
+# one. It takes two parameters, $op and $param.
+
+# When $op == 1 the start of a link string (of some sort) is indicated
+# by a flag $in_string. The link type ($param) and the current line
+# position ($lineleng + $ xpos) are stored in @lk. While the flag is up
+# the link string characters are assembled in $link_string.
+
+# When $op == 0 the end of the link string is signalled by setting the
+# flag $in_string to zero. Then $link_string and its length (the current
+# value of $wordleng) and the number of preceeding spaces are added in
+# turn to @lk. $param is asigned the the dummy value 0 for this part of
+# the procedure.
+
+# When the end of a line is reached (see <sub just>) $op is assigned the
+# vaue 2 and $param the value of $k, the line-length error/space. The
+# contents of @lk are taken off for each link as:
+#     $linktype (5 or 6, i.e. F<> or L<>)
+#     $xbase, the starting position of the string (before line expansion)
+#     $ybase, the current value of $ypos, the height of the line on the page
+#     $str, the link text string
+#     $len, the length of the link text string
+#     $sps the number of prceeding spaces on the line
+# The bounding box lower-left and upper-right co-ordinates ar calculated
+# using $len, $sps, and $k. This calculation mirrors that done by
+# PostScript. The last word stored in @lk may or may not fit on the
+# line. If it does not, the bounding box co-ordinates are shifted to the
+# beginning of the next line. This mirrors the calculation done in <sub
+# just>. Finally the link-strings are sorted according to $linktype and
+# $linksubtype, re-formatted and posted to the appropriate destination.
+
+sub linkBB {
+    my $op = shift;
+    my $param = shift;
+    print STDERR "linkBB($op,$param)\n" if $verbose > 9;
+    if( !$op ) {
+        push(@lk, $link_string, $wordleng, $spaces);
+        $in_link = 0;
+        $link_string = '';
+	    print STDERR "\@lk = @lk\n" if $verbose > 9;
+    } 
+    elsif( $op == 1 ) {
+        $in_link = 1;
+        push(@lk, $param, ($lineleng + $xpos));
+	    print STDERR "\@lk = @lk\n" if $verbose > 9;
+    } 
+    elsif ($op == 2) {
+	    print STDERR "Sifting \@lk = @lk\n" if $verbose > 9;
+	    my($linktype,$xll,$xbase,$ybase,$str,$len,$sps,$xll,$xur,$yll,$yur);
+        while (@lk) {
+            $linktype = shift(@lk); # either 5 or 6
+            $xbase = shift(@lk);
+            $ybase = $ypos;
+            $str = shift(@lk);
+            $len = shift(@lk);
+            $sps = shift(@lk);
+            if (($xbase + $len) > $end ) {
+                $xbase = $cLM + $indent;
+                $xbase += 48 if $tab_str;
+                $sps = 0;
+                $ybase -= $LF;
+            }
+            $xll = sprintf "%0.1f", $xbase + $sps * $param - 1;
+            $xur = sprintf "%0.1f", $xll + $len + 2;
+            $yll = sprintf "%0.1f", $ybase - 0.25*$LF;
+            $yur = sprintf "%0.1f", $ybase + 0.63*$LF;
+            doBox($xll, $yll, $xur, $yur) if( $link_boxtype & 1 );
+	        if( $linktype == 5 ) { pdfLinkFile( $xll, $yll, $xur, $yur, $str ) }
+	        elsif( $linktype == 6 ) {
+		        $str =~ s/^.//;
+		        my $linksubtype = ord($&);
+		        if( $linksubtype == 20 ) { pdfLinkURL( $xll, $yll, $xur, $yur, $str ) }
+		        elsif( $linksubtype >= 16 && $linksubtype <= 19 ) {
+		            if( $linksubtype == 16 ) { $str = "F.$str" }
+		            elsif( $linksubtype == 17 ) { $str =~ s/^(.+) in (.+)$/S.$2.$1/ } 
+		            elsif( $linksubtype == 18 ) { $str = "I.$current_title.$str" }
+		            elsif( $linksubtype == 19 ) { $str = "S.$current_title.$str" }
+		            pdfLinkNameDest( $xll, $yll, $xur, $yur, $str );
+		        } 
+		        else { print STDERR "INTERNAL ERROR \#01: Linktype $linksubtype is out of range\n" }
+		    } 
+            else { print STDERR "INTERNAL ERROR \#03: Linktype $linktype is out of range\n" }
+        }
+    }
+}
+
+sub doBox {
+    my ($xll, $yll, $xur, $yur) = @_;
+    print OUT "gsave 0.3 setlinewidth\n";
+    print OUT "$xll $yll moveto $xll $yur lineto\n";
+    print OUT "$xur $yur lineto $xur $yll lineto\n";
+    print OUT "closepath stroke grestore\n";
+} 
+
+# Escape for PostScript output
+sub psEscape {
+    my $line = shift;
+    $line =~ s/[\000-\024]//g;
+    $line =~ s/[\\\(\)\{\}]/\\$&/g;
+    $line =~ s/[\200-\377]/sprintf("\\%03o",ord($&))/ge;
+    $line;
+}
+
+sub prt {
+    local ($line, $k) = @_;
+    $k = sprintf("%0.4f", $k);
+    $k = 0 if $k >= $k_max;
+    $line =~ s/[\020-\024]//g;
+    $line =~ s/[\\\(\)\{\}]/\\$&/g;
+    $line =~ s/[\200-\377]/sprintf("\\%03o",ord($&))/ge;
+    printf OUT "%0.1f"." "."%0.1f"." M\n", $xpos, $ypos if $line;
+    foreach ( split(/([\001-\007])/,$line) ) {
+        if( /[\001-\007]/ ) {
+            if( /\007/ ) { print OUT "BUL\n"; next }
+            if( /\001/ ) { $p--; $p = 0 if( $p < 0 ) }
+	    else {
+		$sc[$p+1] = $sc[$p];
+                $pt[$p+1] = [$pt[$p][0], $pt[$p][1]]; $p++;
+                if ( /\002/ ) { $pt[$p][1] = 1 } # Bold
+                elsif( /\003/ ) { $pt[$p][1] = 2 } # Italic
+		elsif( /\004/ ) { $pt[$p][0] = 1 } # Courier
+		elsif( /\005/ ) { $pt[$p][1] = $fontstyle{file} }
+		elsif( /\006/ ) {
+		    $pt[$p][1] = $fontstyle{link};
+		    $sc[$p] = 'link' if $link_boxtype&4; # maybe change color
+		}
+	    } 
+	    print OUT "$fs " . $pt[$p][0] . $pt[$p][1] . "F\n";
+	    setColor();		# Only changes color if necessary
+	    next;
+	}
+	print OUT "$k \($_\) tL\n" if $_;
+    }
+}
+
+sub setFont {
+    my($set) = shift;
+    my ($font, $style) = ();
+    
+    $fs = $setStyles{$set}[0];
+    
+    if ($setStyles{$set}[1] eq Times) { $font = 0 }
+    elsif ($setStyles{$set}[1] eq Courier)  { $font = 1 }
+    elsif ($setStyles{$set}[1] eq Helvetica) { $font = 2 }
+    else { print STDERR "$setStyles{$set}[1] ($set,$fs) is an unrecognised font\n"; exit }
+    
+    if ($setStyles{$set}[2] eq Regular) { $style = 0 }
+    elsif ($setStyles{$set}[2] eq Bold) { $style = 1 }
+    elsif ($setStyles{$set}[2] eq Oblique) { $style = 2 }
+    elsif ($setStyles{$set}[2] eq BoldOblique) { $style = 3 }
+    else { print STDERR "setStyles{$set}[1] ($set,$fs) is an unrecognised style\n"; exit }
+    
+    print OUT $fs, ' ', $font, $style, "F\n";
+    @scratch_pad = ($font, $style);
+    $LF = $leading * $fs;
+    $uH = $LF * $heading_lift;
+    $WS = $LF * $paragraph_space;
+}
+
+sub setColor {
+    if( $sc[$p] ne $current_color ) {
+	defined($colorstyle{$sc[$p]}) || die "INTERNAL ERROR \#05 - Unknown colorstyle\n";
+	print OUT "c$sc[$p]\n";
+	$current_color = $sc[$p];
+    }
+}
+
+sub ESC {
+    %HTML = (
+            'lt'     => '<',          'gt'     => '>',          'amp'    => '&',         
+            'quot'   => '"',          'nbsp'   => "\240",       'Aacute' => "\301",      
+            'Acirc'  => "\302",       'Agrave' => "\300",       'Aring'  => "\305",      
+            'Atilde' => "\303",       'Auml'   => "\304",       'Ccedil' => "\307",      
+            'ETH'    => "\320",       'Eacute' => "\311",       'Ecirc'  => "\312",      
+            'Egrave' => "\310",       'Euml'   => "\313",       'Iacute' => "\315",      
+            'Icirc'  => "\316",       'Igrave' => "\314",       'Iuml'   => "\317",      
+            'Ntilde' => "\321",       'AElig'  => "\306",       'Oacute' => "\323",      
+            'Ocirc'  => "\324",       'Ograve' => "\322",       'Oslash' => "\330",      
+            'Otilde' => "\325",       'Ouml'   => "\326",       'THORN'  => "\336",      
+            'Uacute' => "\332",       'Ucirc'  => "\333",       'Ugrave' => "\331",      
+            'Uuml'   => "\334",       'Yacute' => "\335",       'aelig'  => "\346",      
+            'aacute' => "\341",       'acirc'  => "\342",       'agrave' => "\340",      
+            'aring'  => "\345",       'atilde' => "\343",       'auml'   => "\344",      
+            'ccedil' => "\347",       'eacute' => "\351",       'ecirc'  => "\352",      
+            'egrave' => "\350",       'emdash' => "\217",       'eth'    => "\360",      
+            'euml'   => "\353",       'iacute' => "\355",       'icirc'  => "\356",      
+            'igrave' => "\354",       'iuml'   => "\357",       'ntilde' => "\361",      
+            'oacute' => "\363",       'ocirc'  => "\364",       'ograve' => "\362",      
+            'oslash' => "\370",       'otilde' => "\365",       'ouml'   => "\366",      
+            'thorn'  => "\376",       'uacute' => "\372",       'ucirc'  => "\373",      
+            'ugrave' => "\371",       'uuml'   => "\374",       'yacute' => "\375",      
+            'yuml'   => "\377",       'reg'    => "\256",       'copy'   => "\251",      
+             );
+}
+
+sub pageFooter {
+    my $y0 = $bottom_bar;
+    my $y1 = $y0 - 13;
+    my $x0 = $left_margin;
+    my $x1 = $xsize - $right_margin;
+    my $x2 = 0.5 * ($x0 + $x1);
+    print OUT "gsave 0.1 setlinewidth\n";
+    print OUT "$x0 $y0 M $x1 $y0 lineto stroke\n";
+    setFont('footer');
+    print OUT "$x0 $y1 M 0 \(", $even?$page:$date_footer, "\) tL\n";
+    print OUT "$x2 $y1 \($mid_footer\) tC\n" if $mid_footer;
+    print OUT "$x1 $y1 \(", $even?$date_footer:$page, "\) tR\n"; 
+    print OUT "grestore showpage\n\n";
+    ++$page;
+    pageParity();
+}
+
+sub pageHeader {
+    my $y0 = $ysize - $top_bar;
+    my $y1 = $y0 + 5;
+    my $x0 = $left_margin;
+    my $x1 = $xsize - $right_margin;
+    my $x2 = 0.5 * ($x0 + $x1);
+    print OUT "%%Page: ", sprintf("%03d\n", $page);
+    print OUT "gsave 0.1 setlinewidth\n";
+    print OUT "$x0 $y0 moveto $x1 $y0 lineto stroke\n";
+    setFont('header');
+    print OUT "$x0 $y1 M 0 \(", $even?$out_title:$in_title, "\) tL\n";
+    print OUT "$x2 $y1 \(", $mid_title, "\) tC\n" if $mid_title;
+    print OUT "$x1 $y1 \(", $even?$in_title:$out_title, "\) tR\n";
+    print OUT "grestore\n";
+    pdfArticleBead($current_title); # add PDF article bead
+    $yrem = $ypos = $ysize - $top_margin + 12;
+}
+
+sub pageParity {
+    # Sets variables based on whether page is odd or even
+    if( $duplex && !($page&1) ) {
+        $left_margin = $outside_margin;
+        $right_margin = $inside_margin;
+        $even = 1;
+    } else {
+        $right_margin = $outside_margin;
+        $left_margin = $inside_margin;
+        $even = 0;
+    }
+}
+
+#############################################################################
+# PostScript File open/close routines (by Alan)
+#############################################################################
+    
+sub psOpen {
+    return if( $dry_run );
+    if( $output_check && -e $ofname ) {
+	die "ERROR: File $ofname already exists. Please delete and try again\n";
+    }
+    open(OUT, ">$ofname") || die "Could not open output file '$ofname': $!\n";
+
+    print STDERR "Opening output file $ofname\n" if $verbose;
+    
+    print OUT "%!PS-Adobe_3.0\n";
+    print OUT "%%Title: ($book_title)\n";
+    print OUT "%%Creator: ($pdf_creator)\n";
+    print OUT "%%CreationDate: ($pdf_date)\n";
+    print OUT "%%BoundingBox: 0 0 $xsize $ysize\n";
+    print OUT "%%Pages: (atend)\n";
+    print OUT "%%EndComments\n\n";
+
+    print OUT "%%BeginProlog\n";
+    print OUT "/bdef { bind def } bind def\n";
+    my $cname;
+    foreach $cname (keys %colorstyle) {
+	print OUT "/c$cname { $colorstyle{$cname} } bdef\n";
+    }
+    my $ps_str = "
+    /M { moveto } bdef
+   
+    /tL {
+    /txt exch def
+    /kn exch def
+    kn 0 8#040 txt widthshow
+    } bdef
+    
+    /tR {
+    /txt exch def
+    /ypos exch def
+    /xpos exch def
+    xpos txt stringwidth pop sub ypos moveto
+    txt show
+    } bdef
+    
+    /tC {
+    /txt exch def
+    /ypos exch def
+    /xpos exch def
+    xpos txt stringwidth pop 0.5 mul sub ypos moveto
+    txt show
+    } bdef
+    
+    /BUL {
+    2 2.7 rmoveto currentpoint gsave 2 -90 270 arc 
+    gsave fill grestore grestore 2 -2.7 rmoveto } bdef
+    
+    /ISOL [
+        /.notdef             /.notdef             /.notdef             /.notdef
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /space               /exclam              /quotedbl            /numbersign         
+        /dollar              /percent             /ampersand           /quoteright         
+        /parenleft           /parenright          /asterisk            /plus               
+        /comma               /minus               /period              /slash              
+        /zero                /one                 /two                 /three              
+        /four                /five                /six                 /seven              
+        /eight               /nine                /colon               /semicolon          
+        /less                /equal               /greater             /question           
+        /at                  /A                   /B                   /C                  
+        /D                   /E                   /F                   /G                  
+        /H                   /I                   /J                   /K                  
+        /L                   /M                   /N                   /O                  
+        /P                   /Q                   /R                   /S                  
+        /T                   /U                   /V                   /W                  
+        /X                   /Y                   /Z                   /bracketleft        
+        /backslash           /bracketright        /asciicircum         /underscore         
+        /quoteleft           /a                   /b                   /c                  
+        /d                   /e                   /f                   /g                  
+        /h                   /i                   /j                   /k                  
+        /l                   /m                   /n                   /o                  
+        /p                   /q                   /r                   /s                  
+        /t                   /u                   /v                   /w                  
+        /x                   /y                   /z                   /braceleft          
+        /bar                 /braceright          /asciitilde          /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /.notdef            
+        /.notdef             /.notdef             /.notdef             /emdash           
+        /dotlessi            /grave               /acute               /circumflex         
+        /tilde               /macron              /breve               /dotaccent          
+        /dieresis            /.notdef             /ring                /cedilla            
+        /.notdef             /hungarumlaut        /ogonek              /caron              
+        /space               /exclamdown          /cent                /sterling           
+        /currency            /yen                 /brokenbar           /section            
+        /dieresis            /copyright           /ordfeminine         /guillemotleft      
+        /logicalnot          /hyphen              /registered          /macron             
+        /degree              /plusminus           /twosuperior         /threesuperior      
+        /acute               /mu                  /paragraph           /periodcentered     
+        /cedilla             /onesuperior         /ordmasculine        /guillemotright     
+        /onequarter          /onehalf             /threequarters       /questiondown       
+        /Agrave              /Aacute              /Acircumflex         /Atilde             
+        /Adieresis           /Aring               /AE                  /Ccedilla           
+        /Egrave              /Eacute              /Ecircumflex         /Edieresis          
+        /Igrave              /Iacute              /Icircumflex         /Idieresis          
+        /Eth                 /Ntilde              /Ograve              /Oacute             
+        /Ocircumflex         /Otilde              /Odieresis           /multiply           
+        /Oslash              /Ugrave              /Uacute              /Ucircumflex        
+        /Udieresis           /Yacute              /Thorn               /germandbls         
+        /agrave              /aacute              /acircumflex         /atilde             
+        /adieresis           /aring               /ae                  /ccedilla           
+        /egrave              /eacute              /ecircumflex         /edieresis          
+        /igrave              /iacute              /icircumflex         /idieresis          
+        /eth                 /ntilde              /ograve              /oacute             
+        /ocircumflex         /otilde              /odieresis           /divide             
+        /oslash              /ugrave              /uacute              /ucircumflex        
+        /udieresis           /yacute              /thorn               /ydieresis          
+        ]def     
+    
+    /str 30 string def
+    /reEncode {
+        /newFont exch def
+        /oldFont exch def
+        oldFont findfont 
+        dup length dict /newDict exch def
+            {1 index /FID ne
+                {newDict 3 1 roll put}
+                {pop pop}
+            ifelse 
+        } forall
+        newDict /Encoding ISOL put
+        newDict /FontName newFont put
+        newFont newDict definefont pop
+    }def
+    
+    /Times-Roman /Times-Roman-New reEncode
+    /Times-Bold /Times-Bold-New reEncode
+    /Times-Italic /Times-Italic-New reEncode
+    /Times-BoldItalic /Times-BoldItalic-New reEncode
+    /Helvetica /Helvetica-New reEncode
+    /Helvetica-Bold /Helvetica-Bold-New reEncode
+    /Helvetica-Oblique /Helvetica-Oblique-New reEncode
+    /Helvetica-BoldOblique /Helvetica-BoldOblique-New reEncode
+    /Courier /Courier-New reEncode
+    /Courier-Bold /Courier-Bold-New reEncode
+    /Courier-Oblique /Courier-Oblique-New reEncode
+    /Courier-BoldOblique /Courier-BoldOblique-New reEncode
+    
+    ";
+    $ps_str =~ s/^    //gm;
+    print OUT $ps_str;
+    
+    my $fontname;
+    foreach $fontname (sort keys %fontdef) {
+        print OUT "\/$fontdef{$fontname}F \{\/FS exch def \/$fontname findfont FS scalefont setfont \} bdef\n";
+    }
+
+    print OUT "\nsystemdict /pdfmark known not\n";
+    print OUT "{userdict /pdfmark systemdict /cleartomark get put } if\n";
+    print OUT "%%EndProlog\n\n";
+
+    print OUT "%%BeginSetup\n";
+    print OUT "systemdict /setpagedevice known {\n";
+    print OUT "2 dict dup /PageSize [$xsize $ysize] put dup /Policies 1 dict dup /PageSize ";
+    print OUT "4 put put setpagedevice} if\n";
+    print OUT "%%EndSetup\n\n";
+
+    pdfCatalog();
+    pdfInfo();
+
+    print OUT "\n";
+    setFont('Body');
+}
+
+sub psClose {
+    return if $dry_run;
+    outputBookmarks();
+    outputLinks();
+    print OUT "%%Trailer\n";
+    $all_pages = $page - $start_page;
+    print OUT "%%Pages: $all_pages\n";
+}
+
+sub pdfCatalog {
+    # Generate PDF Catalog dictionary
+    # This says to open PDF file with bookmark/outlines open
+    print OUT "[ /PageMode /UseOutlines /DOCVIEW pdfmark\n";
+}
+
+sub pdfInfo {
+    # Generate PDF Info dictionary
+    print OUT "\n% CATALOG INFO\n[ ";
+    print OUT "/Title ($book_title)\n" if defined($book_title);
+    print OUT "/CreationDate ($pdf_date)\n" if defined($pdf_date);
+    print OUT "/Creator ($pdf_creator)\n" if defined($pdf_creator);
+    print OUT "/Author ($pdf_author)\n" if defined($pdf_author);
+    print OUT "/Subject ($pdf_subject)\n" if defined($pdf_subject);
+    print OUT "/Keywords ($pdf_keywords)\n" if defined($pdf_keywords);
+    print OUT "/DOCINFO\npdfmark\n";
+}
+    
+#############################################################################
+# Table of Contents and Cover Page (code by Jim)
+#############################################################################
+
+# Use to generate a Table of Contents at the end of the PostScript output. 
+
+sub makeToC {
+    my $sort = shift;		# if 1 then sort output alphabetically (index)
+    my $toc_level = shift;
+    $toc_level = 3 if !defined($toc_level);
+    return unless( @bktop && $toc_level >= 0 );
+
+    blankPage(1) if $even;
+    my $index_margin = $left_margin + 0;
+    $current_title = $in_title = $out_title = $sort?'Index':'Table of Contents';
+    my $caps_title = $current_title;
+    $caps_title =~ tr/a-z/A-Z/;
+    
+    print STDERR "Generating $current_title\n" if $verbose;
+    print OUT "\n% $caps_title\n\n";
+    pdfBookmark( 0, $current_title, $page-$start_page+1, undef );
+    pageHeader();
+
+    # Print a title on the first page
+
+    setFont('H1');
+    $ypos -= $LF;
+    print OUT "$index_margin $ypos M 0 \($caps_title\) tL\n";
+    $ypos -= $LF + $WS;
+
+    # Flatten the bookmark list, and sort if necessary
+
+    my $bkref;
+    my @bklist = ();
+    foreach $bkref (@bktop) {
+        push( @bklist, @{$bkref->flattenBookmark(0)} );
+    }
+    # No need to sort for ToC
+    if( $sort ) {
+	@bklist = sort(by_title(@bklist));
+    }
+
+    # Print out the entries in the table of contents
+
+    setFont('Body');
+    my $local_left_margin = $index_margin;
+    my $local_right_margin = $xsize - $right_margin;
+    foreach $bkref (@bklist) {
+        next if !$sort && $bkref->{level} > $toc_level;
+	next if $sort && $bkref->{level} != 2 && $bkref->{level} != 3;
+        if( $ypos <= $bottom_margin + $LF + 20 ) {
+            pageFooter();
+            pageHeader();
+            $ypos -= $LF;
+        }
+	if( !$sort ) {
+	    $local_left_margin = $index_margin + $bkref->get('bklevel')*$index_indent;
+	}
+        $ypos -= $LF;
+        print OUT "$local_left_margin $ypos M 0 \(", $bkref->{title}, "\) tL\n";
+        print OUT "$local_right_margin $ypos \(", $bkref->{page}, "\) tR\n";
+        pdfLinkBookmark( $local_left_margin, $ypos-0.25*$LF, $local_right_margin, $ypos+0.75*$LF, $bkref );
+    }
+    &pageFooter;
+}
+
+sub by_title {
+    my( $aa, $bb ) = ( $a->get('title'), $b->get('title') );
+    $aa =~ tr/A-Z/a-z/;
+    $bb =~ tr/A-Z/a-z/;
+    $aa cmp $bb;
+}
+
+sub coverPage {
+    print STDERR "Generating Cover Page\n" if $verbose;
+    print OUT "\n% COVER PAGE\n\n";
+
+    pageParity();
+
+    my $y0 = 0.3* $ysize;
+    my $y1 = 0.7* $ysize;
+    my $x0 = $left_margin;
+    my $x1 = $xsize - $right_margin;
+    my $ypos;
+    
+    print OUT "gsave 2 setlinewidth\n";
+    print OUT "$x0 $y1 M $x1 $y1 lineto stroke\n";
+    setFont('CoverTitle');
+    print OUT 0.5*$xsize, ' ', $y1+5, " \($book_title\) tC\n" if $book_title;
+    setFont('Cover1');
+    print OUT 0.5*$xsize, ' ', $y1-$LF-$WS, " \($mid_footer\) tC\n" if $mid_footer;
+    print OUT 0.5*$xsize, ' ', $y1-$LF-$LF-$WS, " \($date_footer\) tC\n" if $date_footer;
+
+    print OUT "$x0 $y0 M $x1 $y0 lineto stroke\n";
+    if( $larry ) {
+        setFont('Cover2');
+        $ypos = $y0 - $LF;
+        print OUT "$x0 $ypos M 0 \(\"There\'s more than one way to do it.\"\) tL\n";
+        setFont('Cover3');
+        $ypos -= $LF;
+        print OUT "$x1 $ypos \(-- Larry Wall, Author of the Perl Programming Language\) tR\n";
+        $ypos = $ysize*0.2;
+    } else {
+        $ypos = $y0;
+    }
+    setFont('Cover1');
+    $ypos -= $LF;
+    print OUT 0.5*$xsize, " $ypos \(Author: $pdf_author\) tC\n" if $pdf_author;
+    
+    insertGraphic();
+
+    print OUT "grestore showpage\n";
+    ++$page;
+    pageParity();
+
+    blankPage(0) if $even;
+}
+
+sub blankPage {
+    my $headers = shift;	# if 1 then print headers
+    print OUT "\n% Blank Page\n";
+    if( $headers ) {
+	$current_title = $in_title = $out_title = undef;
+	pageHeader();
+    }
+    print OUT "gsave\n";
+    setFont('Body');
+    print OUT 0.5*$xsize, ' ', 0.5*$ysize, " \(blank\) tC\n";
+    if( $headers ) {
+	pageFooter();
+    } else {
+	print OUT "grestore showpage\n\n";
+	++$page;
+	pageParity();
+    }
+}
+
+sub insertGraphic {
+    # Draw a camel, anyone?
+}
+
+#############################################################################
+# PDF LINK ANNOTATIONS - Subroutines to generate PDF links - jpravetz
+#############################################################################
+
+# Add a link using a preexisting bookmark. This is used when creating
+# a table of contents.
+
+sub pdfLinkBookmark {
+    my($x0,$y0,$x1,$y1,$bkref) = @_;
+    # Add a link at given coordinates using given bookmark references
+    print OUT "[ /Rect [ $x0 $y0 $x1 $y1 ] ";
+    print OUT "/Border [0 0 0] "; # do not draw border around link
+    print OUT "/Subtype /Link ";
+    print OUT $bkref->getDestString();
+    print OUT "/ANN pdfmark\n";
+}
+
+# Add a link to a URL
+
+sub pdfLinkURL {
+    my($x0,$y0,$x1,$y1,$url) = @_;
+    # print STDERR "Creating URL Link -> $url\n";
+    # Add a link at given coordinates using given bookmark references.
+    # $url must be of the form 'http://www.adobe.com'
+    # Escape brackets and backslash
+    $url =~ s/[\\\(\)\{\}]/\\$&/g;
+    # Now escape high order characters
+    $url =~ s/[\200-\377]/sprintf("\\%03o",ord($&))/ge;
+    $lref = Link->new($x0,$y0,$x1,$y1);
+    $lref->{url} = $url;
+    print OUT $lref->output();
+}
+
+# Add a link to a file
+
+sub pdfLinkFile {
+    my($x0,$y0,$x1,$y1,$fname) = @_;
+    # Add a link at given coordinates using given bookmark references.
+    # THIS FEATURE CURRENTLY DISABLED
+    # $lref = Link->new($x0,$y0,$x1,$y1);
+    # $lref->{file} = $fname;
+    # print OUT $lref->output();
+}
+
+# Add a link given a file, section, or item name. The link will be
+# added to a list that will be resolved and output during
+# psClose(). This means that you do not need to know if the
+# destination exists when you create the link, and that the link will
+# only be created if the destination really exists.
+
+sub pdfLinkNameDest {
+    my($x0,$y0,$x1,$y1,$podname) = @_;
+    # Add a link at given coordinates using given pod file name.
+    # Does not output link until end of file, but caches request for link.
+    # $podname should be in one of the following forms
+    #   F.perlpod - points to the pod file 'perlpod'
+    #   S.perlpod.SYNOPSYS - points to the section 'SYNOPSYS' in file 'perlpod'
+    #   I.perlpod.blah - points to the item 'blah' in file 'perlpod'
+
+    $podname = ndestEscape( $podname );
+    $lref = Link->new($x0,$y0,$x1,$y1,$page-$start_page+1);
+    $lref->{ndest} = $podname;
+    push( @linkList, $lref );
+}
+
+sub ndestEscape {
+    # Escapes named destinations to get rid of naughty characters
+    $_[0] =~ s/\ /\_/g;         # change spaces to '_'
+    $_[0] =~ s/[^\w\.]+//g;     # delete non alphanumeric characters
+    $_[0];
+}
+
+# Output all links - called by psClose(). Verifies that link
+# destination exists before creating link. If link destination does
+# not exist then a warning is produced.
+
+sub outputLinks {
+    if( scalar(@linkList) ) {
+        print STDERR "Processing Links to Named Destinations\n";
+        print OUT "\n% Links to Named Destinations\n\n";
+    
+        my $lref;
+        foreach $lref (@linkList) {
+            if( $lref->{ndest} ) {
+                if( defined($named_dest{$lref->{ndest}}) ) {
+		    print STDERR 'OKAY: Link to ', $lref->{ndest}, " resolved\n" if $verbose >= 3;
+                    print OUT $lref->output();
+                } else {
+                    print STDERR 'WARNING: Link to ', $lref->{ndest}, " not resolved\n" if $verbose >= 2;
+                }
+            } else {
+                print OUT $lref->output();
+            }
+        }
+        print OUT "\n";
+    }
+}
+
+#############################################################################
+# PDF ARTICLE THREADS - Generate an article thread on each page. This
+# function must called during output of the current page.
+#############################################################################
+
+sub pdfArticleBead {
+    my $title = podname;
+
+    $title = ndestEscape( $title );
+    # Must be called within current page
+    print OUT "% PDF Article Bead for current page\n";
+    printf( OUT "[ /Title (A.$title) /Rect [ %d %d %d %d ] /ARTICLE pdfmark\n\n",
+          $left_margin - 10, $bottom_bar, $xsize-$right_margin+10, $ysize-$top_bar );
+}
+
+#############################################################################
+# PDF NAMED DESTINATIONS - Creates a Named Destination. If $y0 then
+# use FitHB, otherwise fit entire page on screen.
+#############################################################################
+
+sub pdfNamedDest {
+    my $ndest = shift;
+    my $page = shift;
+    my $y0 = shift;
+
+    print OUT "\n% Named destination\n";
+    if( $y0 ) {
+        print OUT "[ /Dest /$ndest /Page $page /View [ /FitBH $y0 ] /DEST pdfmark\n\n";
+    } else {
+        print OUT "[ /Dest /$ndest /Page $page /View [ /Fit ] /DEST pdfmark\n\n";
+    }
+}
+
+#############################################################################
+# PDF BOOKMARKS - Add bookmarks and change bookmark levels
+#############################################################################
+
+sub pdfBookmark {
+    my($level,$title,$page,$y0) = @_;
+    # $level must be in range -2 to 3
+
+    # Create new bookmark, clear active bookmark for lower level
+    # bookmarks, and set active bookmark at current level to new
+    # bookmark. If this is level 0 or 1 (ie a pod title, or head1
+    # within a pod file) then /Dest will be a named destination, and
+    # either be an article bead (which is automatically created) or a
+    # Fit view (or FitBH view for section headings).
+
+    # NOTE: I will try to create named destinations for items ($level
+    # == 3).  This will be so that links to items are supported.
+
+    my $bknew;
+    # Check if we should make a named destination
+    if( $level == 0 || $level == 1 || $level == 3 ) {
+        my $ndest = $title;
+        if( $pdf_article && level == 0 ) {
+            $ndest = 'A.' . $ndest;
+            $ndest = ndestEscape( $ndest );
+        } else {
+	    # print STDERR "BOOKMARK level=$level ndest=$ndest\n";
+            if( $level == 0 ) {
+                $ndest = 'F.' . $ndest;
+                $ndest = ndestEscape( $ndest );
+                pdfNamedDest( $ndest, $page );
+            } elsif( $level == 3 ) { # =item
+		if( $one_word_item ) {
+		    $ndest =~ s/^(\S+).*/$1/; # strip to one word
+		}
+                $ndest = 'I.' . $current_title . '.' . $ndest;
+                $ndest = ndestEscape( $ndest );
+                pdfNamedDest( $ndest, $page, $y0 );
+            } else {
+                $ndest = 'S.' . $current_title . '.' . $ndest;
+                $ndest = ndestEscape( $ndest );
+                pdfNamedDest( $ndest, $page, $y0 );
+            }
+        }
+        $named_dest{$ndest} = $page; # keep track of named destinations (not used)
+        $bknew = Bookmark->new( $title, $level, $ndest, $page, $y0 );
+    } else {
+        $bknew = Bookmark->new( $title, $level, undef, $page, ($level<0)?0:$y0 );
+    }
+    pdfClearBookmark($level+1);
+    $bkactive{$level} = $bknew;
+
+    # Find which list to attach new bookmark to
+    if( $level == -2 ) {        # above file by 2
+        push( @bktop, $bknew );
+
+    } elsif( $level == -1 ) {        # above file
+        if( defined($bkactive{-2}) ) { # if there is a level above this
+            $bkactive{-2}->addKid( $bknew );
+        } else {
+            push( @bktop, $bknew );
+        }
+
+    } elsif( $level == 0 ) {    # file (pod title)
+        if( defined($bkactive{-1}) ) { # if there is a level 1 above this
+            $bkactive{-1}->addKid( $bknew );
+        } elsif( defined($bkactive{-2}) ) { # if there is a level 2 above this
+            $bkactive{-2}->addKid( $bknew );
+            # die "ERROR: Cannot attach pod file to level 2 bookmark. Fix $cfname\n";
+        } else {
+            push( @bktop, $bknew );
+        }
+        
+    } elsif( $level == 1 ) {    # =head1
+        if( !defined($bkactive{0}) ) {
+            die "ERROR: No file bookmark declared above head1 '$title', for file $ifname\n";
+        }
+        $bkactive{0}->addKid( $bknew );
+
+    } elsif( $level == 2 ) { # =head2
+        if( !defined($bkactive{0}) ) {
+            die "ERROR: No file bookmark declared above head2 '$title', for file $ifname\n";
+        }
+        if( defined($bkactive{1}) ) {
+            $bkactive{1}->addKid( $bknew );
+        } else {
+            $bkactive{0}->addKid( $bknew );
+        }
+
+    } elsif( $level == 3 ) {    # =item
+        if( !defined($bkactive{0}) ) {
+            die "ERROR: No file bookmark declared above item '$title', for file $ifname\n";
+        }
+        if( defined($bkactive{2}) ) {
+            $bkactive{2}->addKid( $bknew );
+        } elsif( defined($bkactive{1}) ) {
+            $bkactive{1}->addKid( $bknew );
+        } else {
+            $bkactive{0}->addKid( $bknew );
+        }
+    }
+}
+
+sub outputBookmarks {
+
+    if( scalar(@bktop) ) {
+        print STDERR "Processing Bookmarks\n";
+        print OUT "\n% Bookmarks\n\n";
+    
+        my $bk;
+        foreach $bk (@bktop) {
+            print OUT $bk->output();
+        }
+        print OUT "\n";
+    }
+}
+
+sub pdfClearBookmark {
+    my $level = shift;
+    # Clears active bookmark for levels below $level
+    for( ; $level<=3; ++$level ) {
+        undef($bkactive{$level});
+    }
+}
+
+#############################################################################
+# PDF LINKS - Object support package (by Jim)
+#############################################################################
+
+package Link;
+
+sub new {
+    my $class = shift;
+    my( $x0, $y0, $x1, $y1, $page ) = @_;
+    my $self = {};
+    $self->{x0} = $x0;
+    $self->{y0} = $y0;
+    $self->{x1} = $x1;
+    $self->{y1} = $y1;
+    $self->{page} = $page;      # may be undefined (this is source page)
+    bless $self, $class;
+}
+
+# Method returns a string with the destination all worked out (/Dest
+# or something along those lines).
+
+sub getDestString {
+    my $self = shift;
+    my $str;
+    if( defined($self->{ndest}) ) {
+        if( $self->{ndest} =~ /^A\./ ) {
+            $str .= '/Action /Article /Dest (' . $self->{ndest} . ') ';
+        } else {
+            $str .= '/Dest /' . $self->{ndest} . ' ';
+        }
+    } elsif( defined($self->{url} ) ) {
+        $str .= '/Action 2 dict dup /Subtype /URI put dup /URI (' . $self->{url} . ') put ';
+        # $str .= '/Action << /Subtype /URI /URI (' . $self->{url} . ') >> ';
+    } elsif( defined($self->{file} ) ) {
+        $str .= '/Action /GotoR /File (' . $self->{file} . ') /Page 1 ';
+    } else {
+        $str .= '/Page ' . $self->{page} . ' ';
+        $str .= '/View [';
+        if( $self->{ypos} ) {
+            $str .= '/FitBH ' . $self->{ypos} . '] ';
+        } else {
+            $str .= '/Fit] ';
+        }
+    }
+    $str;
+}
+
+sub output {
+    my $self = shift;
+    my $str;
+
+    $str .= '[ /Rect [ ' . $self->{x0} . ' ' . $self->{y0} . ' ' . $self->{x1} . ' ' . $self->{y1} . ' ] ';
+    $str .= '/SrcPg ' . $self->{page} . ' ' if $self->{page};
+    if( $main::link_boxtype&2 ) {
+	$str .= '/Border [0 0 1] ';
+	$str .= '/C [0 0 1] ';
+    } else {
+	$str .= '/Border [0 0 0] ';
+    }
+    $str .= '/Subtype /Link ';
+    $str .= $self->getDestString();
+    $str .= "/ANN pdfmark\n";
+}
+
+#############################################################################
+# PDF BOOKMARKS - Object support package (by jpravetz)
+#############################################################################
+
+package Bookmark;
+
+# Method to create a new bookmark object. Returns reference to object
+
+sub new {
+    my $class = shift;
+    my( $title, $level, $ndest, $page, $y0 ) = @_;
+    my $self = {};
+    $title =~ s/[\\\(\)\{\}\"]/\\$&/g;
+    # Now escape high order characters
+    $line =~ s/[\200-\377]/sprintf("\\%03o",ord($&))/ge;
+    $self->{title} = $title;
+    $self->{level} = $level;    # header level (-2..3=bk2,bk1,pod,head1,head2,item)
+    if( $ndest ) {
+        $ndest = &main::ndestEscape( $ndest );
+        $self->{ndest} = $ndest;
+    }
+    $self->{page} = $page;
+    $self->{ypos} = $y0;
+    $self->{kids} = [];
+    bless $self, $class;
+}
+
+sub getDestString {
+    my $self = shift;
+    &Link::getDestString( $self );
+}
+
+sub addKid {
+    my $self = shift;
+    my $bkref = shift;
+
+    # Add a child bookmark to a parent bookmark
+    push( @{$self->{kids}}, $bkref );
+}
+
+# Method to output bookmark hierarchy
+
+sub output {
+    my $self = shift;
+
+    my $str = '[ ';
+    my $count = scalar(@{$self->{kids}}) if $main::bkon{$self->{level}+1};
+    $str .= "/Count \-$count " if $count;
+    $str .= '/Title (' . $self->{title} . ') ';
+    $str .= $self->getDestString();
+    $str .= "/OUT pdfmark\n";
+
+    # If outputting for next level down then descend
+    if( $main::bkon{$self->{level}+1} ) {
+        my $bkref;
+        foreach $bkref (@{$self->{kids}}) {
+            $str .= $bkref->output($str);
+        }
+    }
+    $str;
+}
+
+# Method to return flattened list of bookmark entries, for use in
+# Table of Contents
+
+sub flattenBookmark {
+    my $self = shift;
+    my $current_level = shift;
+    my @result = ();
+
+    $self->set('bklevel',$current_level); # tells makeToC how deep we are
+    push( @result, $self );
+    my $bkref;
+    foreach $bkref (@{$self->{kids}}) {
+        push( @result, @{$bkref->flattenBookmark($current_level+1)} );
+    }
+    \@result;
+}
+
+sub get {
+    my $self = shift;
+    my $key = shift;
+    $self->{$key};
+}
+
+sub set {
+    my $self = shift;
+    my $key = shift;
+    my $value = shift;
+    $self->{$key} = $value;
+}
+
+package main;
+
+#############################################################################
+# DATE ROUTINES (by Jim)
+#############################################################################
+
+# Returns time in format defined by Adobe PDF Reference Manual.
+# Format is D:YYYYMMDDHHmmSSOHH'mm'. If $flag is 1 then OHH'mm' is not
+# included. If flag is 2 then only D:YYYYMMDD is included. If flag is
+# 3 then date returned is in format 01-Jan-1996. Written by Jim
+# Pravetz.
+
+sub datestr {
+    my($time,$flag) = @_ ;
+    my @lt;
+
+    my @mt = ( 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+             'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec' );
+    @lt = localtime($time);
+    if( $flag >= 3 ) {
+        sprintf("%02d-%s-%04d", $lt[3], $mt[$lt[4]], $lt[5]+1900 );
+    } elsif( $flag == 2 ) {
+        sprintf("D:%04d%02d%02d", $lt[5]+1900, $lt[4]+1, $lt[3] );
+    } elsif( $flag ) {
+        sprintf("D:%04d%02d%02d%02d%02d%02d", $lt[5]+1900, $lt[4]+1, $lt[3],
+                $lt[2], $lt[1], $lt[0]  );
+    } else {
+        sprintf("D:%04d%02d%02d%02d%02d%02d%s%02d%02d", $lt[5]+1900, $lt[4]+1, $lt[3],
+                $lt[2], $lt[1], $lt[0], &gzonediff()  );
+    }
+}
+
+# Used by pdfdatestr. Returns ( plusminus, hours, minutes ) of local
+# time zone relative to Greenwich time
+
+sub gzonediff {
+    local($plusminus,$diff);
+    local(@x) = localtime(0);
+    if( $x[3] > 1 ) {
+        $plusminus = "-";
+        $diff = 60*(24-$x[2]) - $x[1];
+    } else {
+        $plusminus = "+";
+        $diff = 60*$x[2] + $x[1];
+    }
+    ( $plusminus, int($diff/60), $diff%60 );
+}
+
+#############################################################################
+# Font Metrics (font widths) - Data from Adobe Font Metrics Files
+#############################################################################
+
+sub afm {
+    $wx[0][0] =
+	[			#Times-Roman ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.250,  0.333,  0.408,  0.500,  0.500,  0.833,  0.778,  0.333,  
+	 0.333,  0.333,  0.500,  0.564,  0.250,  0.564,  0.250,  0.278,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  
+	 0.500,  0.500,  0.278,  0.278,  0.564,  0.564,  0.564,  0.444,  
+	 0.921,  0.722,  0.667,  0.667,  0.722,  0.611,  0.556,  0.722,  
+	 0.722,  0.333,  0.389,  0.722,  0.611,  0.889,  0.722,  0.722,  
+	 0.556,  0.722,  0.667,  0.556,  0.611,  0.722,  0.722,  0.944,  
+	 0.722,  0.722,  0.611,  0.333,  0.278,  0.333,  0.469,  0.500,  
+	 0.333,  0.444,  0.500,  0.444,  0.500,  0.444,  0.333,  0.500,  
+	 0.500,  0.278,  0.278,  0.500,  0.278,  0.778,  0.500,  0.500,  
+	 0.500,  0.500,  0.333,  0.389,  0.278,  0.500,  0.500,  0.722,  
+	 0.500,  0.500,  0.444,  0.480,  0.200,  0.480,  0.541,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  1.000,  
+	 0.278,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  
+	 0.333,  0.000,  0.333,  0.333,  0.000,  0.333,  0.333,  0.333,  
+	 0.250,  0.333,  0.500,  0.500,  0.500,  0.500,  0.200,  0.500,  
+	 0.333,  0.760,  0.276,  0.500,  0.564,  0.333,  0.760,  0.333,  
+	 0.400,  0.564,  0.300,  0.300,  0.333,  0.500,  0.453,  0.250,  
+	 0.333,  0.300,  0.310,  0.500,  0.750,  0.750,  0.750,  0.444,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  0.889,  0.667,  
+	 0.611,  0.611,  0.611,  0.611,  0.333,  0.333,  0.333,  0.333,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  0.564,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  0.556,  0.500,  
+	 0.444,  0.444,  0.444,  0.444,  0.444,  0.444,  0.667,  0.444,  
+	 0.444,  0.444,  0.444,  0.444,  0.278,  0.278,  0.278,  0.278,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.564,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  
+	 ];
+
+    $wx[0][1] =
+	[			#Times-Bold ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.250,  0.333,  0.555,  0.500,  0.500,  1.000,  0.833,  0.333,  
+	 0.333,  0.333,  0.500,  0.570,  0.250,  0.570,  0.250,  0.278,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  
+	 0.500,  0.500,  0.333,  0.333,  0.570,  0.570,  0.570,  0.500,  
+	 0.930,  0.722,  0.667,  0.722,  0.722,  0.667,  0.611,  0.778,  
+	 0.778,  0.389,  0.500,  0.778,  0.667,  0.944,  0.722,  0.778,  
+	 0.611,  0.778,  0.722,  0.556,  0.667,  0.722,  0.722,  1.000,  
+	 0.722,  0.722,  0.667,  0.333,  0.278,  0.333,  0.581,  0.500,  
+	 0.333,  0.500,  0.556,  0.444,  0.556,  0.444,  0.333,  0.500,  
+	 0.556,  0.278,  0.333,  0.556,  0.278,  0.833,  0.556,  0.500,  
+	 0.556,  0.556,  0.444,  0.389,  0.333,  0.556,  0.500,  0.722,  
+	 0.500,  0.500,  0.444,  0.394,  0.220,  0.394,  0.520,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  1.000,  
+	 0.278,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  
+	 0.333,  0.000,  0.333,  0.333,  0.000,  0.333,  0.333,  0.333,  
+	 0.250,  0.333,  0.500,  0.500,  0.500,  0.500,  0.220,  0.500,  
+	 0.333,  0.747,  0.300,  0.500,  0.570,  0.333,  0.747,  0.333,  
+	 0.400,  0.570,  0.300,  0.300,  0.333,  0.556,  0.540,  0.250,  
+	 0.333,  0.300,  0.330,  0.500,  0.750,  0.750,  0.750,  0.500,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  1.000,  0.722,  
+	 0.667,  0.667,  0.667,  0.667,  0.389,  0.389,  0.389,  0.389,  
+	 0.722,  0.722,  0.778,  0.778,  0.778,  0.778,  0.778,  0.570,  
+	 0.778,  0.722,  0.722,  0.722,  0.722,  0.722,  0.611,  0.556,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.722,  0.444,  
+	 0.444,  0.444,  0.444,  0.444,  0.278,  0.278,  0.278,  0.278,  
+	 0.500,  0.556,  0.500,  0.500,  0.500,  0.500,  0.500,  0.570,  
+	 0.500,  0.556,  0.556,  0.556,  0.556,  0.500,  0.556,  0.500,  
+	 ];
+
+    $wx[0][2] =
+	[			#Times-Italic ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.250,  0.333,  0.420,  0.500,  0.500,  0.833,  0.778,  0.333,  
+	 0.333,  0.333,  0.500,  0.675,  0.250,  0.675,  0.250,  0.278,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  
+	 0.500,  0.500,  0.333,  0.333,  0.675,  0.675,  0.675,  0.500,  
+	 0.920,  0.611,  0.611,  0.667,  0.722,  0.611,  0.611,  0.722,  
+	 0.722,  0.333,  0.444,  0.667,  0.556,  0.833,  0.667,  0.722,  
+	 0.611,  0.722,  0.611,  0.500,  0.556,  0.722,  0.611,  0.833,  
+	 0.611,  0.556,  0.556,  0.389,  0.278,  0.389,  0.422,  0.500,  
+	 0.333,  0.500,  0.500,  0.444,  0.500,  0.444,  0.278,  0.500,  
+	 0.500,  0.278,  0.278,  0.444,  0.278,  0.722,  0.500,  0.500,  
+	 0.500,  0.500,  0.389,  0.389,  0.278,  0.500,  0.444,  0.667,  
+	 0.444,  0.444,  0.389,  0.400,  0.275,  0.400,  0.541,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.889,  
+	 0.278,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  
+	 0.333,  0.000,  0.333,  0.333,  0.000,  0.333,  0.333,  0.333,  
+	 0.250,  0.389,  0.500,  0.500,  0.500,  0.500,  0.275,  0.500,  
+	 0.333,  0.760,  0.276,  0.500,  0.675,  0.333,  0.760,  0.333,  
+	 0.400,  0.675,  0.300,  0.300,  0.333,  0.500,  0.523,  0.250,  
+	 0.333,  0.300,  0.310,  0.500,  0.750,  0.750,  0.750,  0.500,  
+	 0.611,  0.611,  0.611,  0.611,  0.611,  0.611,  0.889,  0.667,  
+	 0.611,  0.611,  0.611,  0.611,  0.333,  0.333,  0.333,  0.333,  
+	 0.722,  0.667,  0.722,  0.722,  0.722,  0.722,  0.722,  0.675,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.556,  0.611,  0.500,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.667,  0.444,  
+	 0.444,  0.444,  0.444,  0.444,  0.278,  0.278,  0.278,  0.278,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.675,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.444,  0.500,  0.444,  
+	 ];
+
+    $wx[0][3] =
+	[			#Times-BoldItalic ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.250,  0.389,  0.555,  0.500,  0.500,  0.833,  0.778,  0.333,  
+	 0.333,  0.333,  0.500,  0.570,  0.250,  0.606,  0.250,  0.278,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  
+	 0.500,  0.500,  0.333,  0.333,  0.570,  0.570,  0.570,  0.500,  
+	 0.832,  0.667,  0.667,  0.667,  0.722,  0.667,  0.667,  0.722,  
+	 0.778,  0.389,  0.500,  0.667,  0.611,  0.889,  0.722,  0.722,  
+	 0.611,  0.722,  0.667,  0.556,  0.611,  0.722,  0.667,  0.889,  
+	 0.667,  0.611,  0.611,  0.333,  0.278,  0.333,  0.570,  0.500,  
+	 0.333,  0.500,  0.500,  0.444,  0.500,  0.444,  0.333,  0.500,  
+	 0.556,  0.278,  0.278,  0.500,  0.278,  0.778,  0.556,  0.500,  
+	 0.500,  0.500,  0.389,  0.389,  0.278,  0.556,  0.444,  0.667,  
+	 0.500,  0.444,  0.389,  0.348,  0.220,  0.348,  0.570,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  1.000,  
+	 0.278,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  
+	 0.333,  0.000,  0.333,  0.333,  0.000,  0.333,  0.333,  0.333,  
+	 0.250,  0.389,  0.500,  0.500,  0.500,  0.500,  0.220,  0.500,  
+	 0.333,  0.747,  0.266,  0.500,  0.606,  0.333,  0.747,  0.333,  
+	 0.400,  0.570,  0.300,  0.300,  0.333,  0.576,  0.500,  0.250,  
+	 0.333,  0.300,  0.300,  0.500,  0.750,  0.750,  0.750,  0.500,  
+	 0.667,  0.667,  0.667,  0.667,  0.667,  0.667,  0.944,  0.667,  
+	 0.667,  0.667,  0.667,  0.667,  0.389,  0.389,  0.389,  0.389,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  0.570,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.611,  0.611,  0.500,  
+	 0.500,  0.500,  0.500,  0.500,  0.500,  0.500,  0.722,  0.444,  
+	 0.444,  0.444,  0.444,  0.444,  0.278,  0.278,  0.278,  0.278,  
+	 0.500,  0.556,  0.500,  0.500,  0.500,  0.500,  0.500,  0.570,  
+	 0.500,  0.556,  0.556,  0.556,  0.556,  0.444,  0.500,  0.444,  
+	 ];      
+
+    $wx[2][0] =
+	[			#Helvetica ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.278,  0.278,  0.355,  0.556,  0.556,  0.889,  0.667,  0.222,  
+	 0.333,  0.333,  0.389,  0.584,  0.278,  0.584,  0.278,  0.278,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  
+	 0.556,  0.556,  0.278,  0.278,  0.584,  0.584,  0.584,  0.556,  
+	 1.015,  0.667,  0.667,  0.722,  0.722,  0.667,  0.611,  0.778,  
+	 0.722,  0.278,  0.500,  0.667,  0.556,  0.833,  0.722,  0.778,  
+	 0.667,  0.778,  0.722,  0.667,  0.611,  0.722,  0.667,  0.944,  
+	 0.667,  0.667,  0.611,  0.278,  0.278,  0.278,  0.469,  0.556,  
+	 0.222,  0.556,  0.556,  0.500,  0.556,  0.556,  0.278,  0.556,  
+	 0.556,  0.222,  0.222,  0.500,  0.222,  0.833,  0.556,  0.556,  
+	 0.556,  0.556,  0.333,  0.500,  0.278,  0.556,  0.500,  0.722,  
+	 0.500,  0.500,  0.500,  0.334,  0.260,  0.334,  0.584,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  1.000,  
+	 0.278,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  
+	 0.333,  0.000,  0.333,  0.333,  0.000,  0.333,  0.333,  0.333,  
+	 0.278,  0.333,  0.556,  0.556,  0.556,  0.556,  0.260,  0.556,  
+	 0.333,  0.737,  0.370,  0.556,  0.584,  0.333,  0.737,  0.333,  
+	 0.400,  0.584,  0.333,  0.333,  0.333,  0.556,  0.537,  0.278,  
+	 0.333,  0.333,  0.365,  0.556,  0.834,  0.834,  0.834,  0.611,  
+	 0.667,  0.667,  0.667,  0.667,  0.667,  0.667,  1.000,  0.722,  
+	 0.667,  0.667,  0.667,  0.667,  0.278,  0.278,  0.278,  0.278,  
+	 0.722,  0.722,  0.778,  0.778,  0.778,  0.778,  0.778,  0.584,  
+	 0.778,  0.722,  0.722,  0.722,  0.722,  0.667,  0.667,  0.611,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.889,  0.500,  
+	 0.556,  0.556,  0.556,  0.556,  0.278,  0.278,  0.278,  0.278,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.584,  
+	 0.611,  0.556,  0.556,  0.556,  0.556,  0.500,  0.556,  0.500,  
+	 ];
+
+    $wx[2][1] =
+	[			#Helvetica-Bold ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.278,  0.333,  0.474,  0.556,  0.556,  0.889,  0.722,  0.278,  
+	 0.333,  0.333,  0.389,  0.584,  0.278,  0.584,  0.278,  0.278,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  
+	 0.556,  0.556,  0.333,  0.333,  0.584,  0.584,  0.584,  0.611,  
+	 0.975,  0.722,  0.722,  0.722,  0.722,  0.667,  0.611,  0.778,  
+	 0.722,  0.278,  0.556,  0.722,  0.611,  0.833,  0.722,  0.778,  
+	 0.667,  0.778,  0.722,  0.667,  0.611,  0.722,  0.667,  0.944,  
+	 0.667,  0.667,  0.611,  0.333,  0.278,  0.333,  0.584,  0.556,  
+	 0.278,  0.556,  0.611,  0.556,  0.611,  0.556,  0.333,  0.611,  
+	 0.611,  0.278,  0.278,  0.556,  0.278,  0.889,  0.611,  0.611,  
+	 0.611,  0.611,  0.389,  0.556,  0.333,  0.611,  0.556,  0.778,  
+	 0.556,  0.556,  0.500,  0.389,  0.280,  0.389,  0.584,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  1.000,  
+	 0.278,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  
+	 0.333,  0.000,  0.333,  0.333,  0.000,  0.333,  0.333,  0.333,  
+	 0.278,  0.333,  0.556,  0.556,  0.556,  0.556,  0.280,  0.556,  
+	 0.333,  0.737,  0.370,  0.556,  0.584,  0.333,  0.737,  0.333,  
+	 0.400,  0.584,  0.333,  0.333,  0.333,  0.611,  0.556,  0.278,  
+	 0.333,  0.333,  0.365,  0.556,  0.834,  0.834,  0.834,  0.611,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  1.000,  0.722,  
+	 0.667,  0.667,  0.667,  0.667,  0.278,  0.278,  0.278,  0.278,  
+	 0.722,  0.722,  0.778,  0.778,  0.778,  0.778,  0.778,  0.584,  
+	 0.778,  0.722,  0.722,  0.722,  0.722,  0.667,  0.667,  0.611,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.889,  0.556,  
+	 0.556,  0.556,  0.556,  0.556,  0.278,  0.278,  0.278,  0.278,  
+	 0.611,  0.611,  0.611,  0.611,  0.611,  0.611,  0.611,  0.584,  
+	 0.611,  0.611,  0.611,  0.611,  0.611,  0.556,  0.611,  0.556,  
+	 ];
+
+    $wx[2][2] =
+	[			#Helvetica-Oblique ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.278,  0.278,  0.355,  0.556,  0.556,  0.889,  0.667,  0.222,  
+	 0.333,  0.333,  0.389,  0.584,  0.278,  0.584,  0.278,  0.278,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  
+	 0.556,  0.556,  0.278,  0.278,  0.584,  0.584,  0.584,  0.556,  
+	 1.015,  0.667,  0.667,  0.722,  0.722,  0.667,  0.611,  0.778,  
+	 0.722,  0.278,  0.500,  0.667,  0.556,  0.833,  0.722,  0.778,  
+	 0.667,  0.778,  0.722,  0.667,  0.611,  0.722,  0.667,  0.944,  
+	 0.667,  0.667,  0.611,  0.278,  0.278,  0.278,  0.469,  0.556,  
+	 0.222,  0.556,  0.556,  0.500,  0.556,  0.556,  0.278,  0.556,  
+	 0.556,  0.222,  0.222,  0.500,  0.222,  0.833,  0.556,  0.556,  
+	 0.556,  0.556,  0.333,  0.500,  0.278,  0.556,  0.500,  0.722,  
+	 0.500,  0.500,  0.500,  0.334,  0.260,  0.334,  0.584,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  1.000,  
+	 0.278,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  
+	 0.333,  0.000,  0.333,  0.333,  0.000,  0.333,  0.333,  0.333,  
+	 0.278,  0.333,  0.556,  0.556,  0.556,  0.556,  0.260,  0.556,  
+	 0.333,  0.737,  0.370,  0.556,  0.584,  0.333,  0.737,  0.333,  
+	 0.400,  0.584,  0.333,  0.333,  0.333,  0.556,  0.537,  0.278,  
+	 0.333,  0.333,  0.365,  0.556,  0.834,  0.834,  0.834,  0.611,  
+	 0.667,  0.667,  0.667,  0.667,  0.667,  0.667,  1.000,  0.722,  
+	 0.667,  0.667,  0.667,  0.667,  0.278,  0.278,  0.278,  0.278,  
+	 0.722,  0.722,  0.778,  0.778,  0.778,  0.778,  0.778,  0.584,  
+	 0.778,  0.722,  0.722,  0.722,  0.722,  0.667,  0.667,  0.611,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.889,  0.500,  
+	 0.556,  0.556,  0.556,  0.556,  0.278,  0.278,  0.278,  0.278,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.584,  
+	 0.611,  0.556,  0.556,  0.556,  0.556,  0.500,  0.556,  0.500,  
+	 ];
+
+    $wx[2][3] =
+	[			#Helvetica-BoldOblique ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.278,  0.333,  0.474,  0.556,  0.556,  0.889,  0.722,  0.278,  
+	 0.333,  0.333,  0.389,  0.584,  0.278,  0.584,  0.278,  0.278,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  
+	 0.556,  0.556,  0.333,  0.333,  0.584,  0.584,  0.584,  0.611,  
+	 0.975,  0.722,  0.722,  0.722,  0.722,  0.667,  0.611,  0.778,  
+	 0.722,  0.278,  0.556,  0.722,  0.611,  0.833,  0.722,  0.778,  
+	 0.667,  0.778,  0.722,  0.667,  0.611,  0.722,  0.667,  0.944,  
+	 0.667,  0.667,  0.611,  0.333,  0.278,  0.333,  0.584,  0.556,  
+	 0.278,  0.556,  0.611,  0.556,  0.611,  0.556,  0.333,  0.611,  
+	 0.611,  0.278,  0.278,  0.556,  0.278,  0.889,  0.611,  0.611,  
+	 0.611,  0.611,  0.389,  0.556,  0.333,  0.611,  0.556,  0.778,  
+	 0.556,  0.556,  0.500,  0.389,  0.280,  0.389,  0.584,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  1.000,  
+	 0.278,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  0.333,  
+	 0.333,  0.000,  0.333,  0.333,  0.000,  0.333,  0.333,  0.333,  
+	 0.278,  0.333,  0.556,  0.556,  0.556,  0.556,  0.280,  0.556,  
+	 0.333,  0.737,  0.370,  0.556,  0.584,  0.333,  0.737,  0.333,  
+	 0.400,  0.584,  0.333,  0.333,  0.333,  0.611,  0.556,  0.278,  
+	 0.333,  0.333,  0.365,  0.556,  0.834,  0.834,  0.834,  0.611,  
+	 0.722,  0.722,  0.722,  0.722,  0.722,  0.722,  1.000,  0.722,  
+	 0.667,  0.667,  0.667,  0.667,  0.278,  0.278,  0.278,  0.278,  
+	 0.722,  0.722,  0.778,  0.778,  0.778,  0.778,  0.778,  0.584,  
+	 0.778,  0.722,  0.722,  0.722,  0.722,  0.667,  0.667,  0.611,  
+	 0.556,  0.556,  0.556,  0.556,  0.556,  0.556,  0.889,  0.556,  
+	 0.556,  0.556,  0.556,  0.556,  0.278,  0.278,  0.278,  0.278,  
+	 0.611,  0.611,  0.611,  0.611,  0.611,  0.611,  0.611,  0.584,  
+	 0.611,  0.611,  0.611,  0.611,  0.611,  0.556,  0.611,  0.556,  
+	 ];
+
+    $wx[1][0] =
+	[			#Courier ISOLatin1
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  
+	 0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.000,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.000,  0.600,  0.600,  0.000,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  0.600,  
+	 ];
+
+    $wx[1][1] = $wx[1][2] = $wx[1][3] = $wx[1][0];
+}
+
+__END__
+
+
+#############################################################################
+# End of pod2ps
+#############################################################################
+
+=head1 NAME
+
+pod2ps - A pod to PostScript translator, with PDF support.
+
+=head1 SYNOPSIS
+
+	pod2ps -o myfile.ps -t 'My Title' myfile.pod myfile2.pod 
+	pod2ps -c commandFileName
+
+=head1 DESCRIPTION
+
+B<pod2ps> takes one or multiple perl I<POD> files that follow the
+rules given in L<perlpod> and guidelines from L<pod2man> and produces
+a single PostScript file. pod2ps can be run on single or multiple
+files from the command line or using a command file, as shown in the
+examples above.
+
+PostScript output includes PDFMARK operators that can be used by the
+commerically available Adobe Acrobat Distiller to produce a fully
+indexed PDF file. PDFMARK support includes: Bookmarks of all head1,
+head2 and item entries, article threads, catalog info dictionary, and
+links.
+
+=head1 OPTIONS
+
+  Usage: pod2ps [options] input_filename [input_filename+]
+      Description:
+          Converts (multiple) pod files to PostScript, with support for 
+          PDF operators.
+      where options are :
+          -c filename : Read command file
+          -o filename : Name of PostScript output file [default STDOUT]
+          -t title : Title of output file (used in headers and PDF info entry)
+          -f footer : String to use in centre of running footers
+          -noduplex : Turn off duplex (double-sided) output
+          -start # : Specify start page [defaults to 1]
+          -x # : Width of page in points [default points 612]
+          -y # : Width of page in points [default points 792]
+          -d : Set verbose level (debug level) [default to 1]
+          -v : Print version information
+          -n : Do not parse pod or produce output (use to verify command file)
+          -shortitem : Use only first word of item title for bookmark titles
+          -toc # : Generate a ToC to # levels at end of PostScript output
+          -h : Print this help message
+
+=head1 COMMAND FILE SYNTAX
+
+It is easiest to use a command file when using pod2ps in an
+environment where a single PostScript file is to be created from
+multiple pod source files. Below is an example command file.
+
+	# Example pod2ps command file
+	
+	# Set configuration parameters
+	cover true
+	release 'Version 5.003'
+	official true
+	author 'Perl5 Contributors'
+	linkbox off color
+	
+	# Open output file
+	output perlman.ps
+	
+	# Start processing input files
+	path /public/shared/lib/perl5/pod
+	file perl.pod
+	# file perltoc.pod
+	file perldata.pod
+	file perlsyn.pod
+	file perlrun.pod
+	oneWordItem true
+	file perlfunc.pod
+	oneWordItem false
+	file perlvar.pod
+	
+	official false
+	beginBookmark 'Core Modules'
+	path /public/shared/lib/perl5
+	file AutoLoader.pm
+	file AutoSplit.pm
+	file Benchmark.pm
+	file Carp.pm
+	endBookmark
+	
+	beginBookmark 'Optional Modules' 2
+	beginBookmark 'Time'
+	file Time/Local.pm 'Time/Local'
+	endBookmark
+	beginBookmark 'Text'
+	file Text/Abbrev.pm
+	file Text/Tabs.pm
+	file Text/Wrap.pm
+	endBookmark
+	endBookmark
+	
+	beginBookmark 'POD Translators'
+	path /public/bin
+	file pod2man
+	file pod2html		# I know this has no pod text
+	path /user/wmiddlet/bin
+	file pod2fm
+	path /user/jpravetz/src/pod2ps
+	oneWordItem true
+	file pod2ps.pod "Alan and Jim's pod2ps"
+	oneWordItem false
+	endBookmark
+	
+	ToC 0			# Only want one level of Table of Contents
+
+	# EOF
+
+The command file parser ignores white space, except to delimit
+commands and parameters on a line. Anything following a C<#> on a line
+is a comment and is also ignored. Use single or double quotes to group
+a string as one parameter.  Commands are case insensitive, however
+command parameters are case sensitive. Please do not stress pod2ps
+with fancy character encodings in the command file: it is likely to
+cause a failure.
+
+The command file is read I<after> any command line options are
+parsed. Any command file parameters will therefore override command
+line options.
+
+Filename wildcards are not supported in the command file.
+
+To verify the syntax of a command file, it is suggested that you
+execute with the C<-n> option. For example,
+
+	pod2ps -c file.cmd -n
+
+In general I<Option> and I<Title> commands should be used at the
+beginning of a command file. I<Title> commands may also be
+interspersed with I<File> commands if the user has particular custom
+needs. I<File> and I<Bookmark> commands will occur in the middle
+portion of the command file.  I<Closing> commands should be at the end
+of the command file.
+
+=head2 Option Commands
+
+These commands should all be set prior to using any I<File Commands>.
+
+=over 8
+
+=item duplex ( true | false )
+
+Set if printing to double sided paper (used to move page numbers to
+right and left side of page for odd and even pages).
+
+=item pagesize VALUE VALUE
+=item pagesize ( USLetter | A4 )
+
+X and Y page dimensions in points (there are 72 points per
+inch). Defaults to 612 x 792 (USLetter). A4 Paper is 595 x 842
+points).
+
+=item margin ( left | top | bottom | right | topbar | bottombar ) VALUE
+
+Set a margin to a VALUE other then the default value. left, top,
+bottom, and right define the bounding box of the body text. topbar and
+bottombar defined the distance from the top and bottom of the page to
+the header and footer lines. All units are in points.
+
+Note: Any user who plays with margin and page size settings is
+themself responsible for ensuring that output is within bounds. We do
+no boundary checking on these values.
+
+=item cover
+
+If specified then generate a cover page at the beginning of the
+PostScript output file. For duplex output, a second blank page will
+also be generated (so that pod files begin at page 3).
+
+There is a variable $larry in pod2ps that allows you to turn on/off a
+Larry Wall quote that is printed on the cover page. Anyone who wants
+to spend time prettifying the cover page is welcome: I can only
+demonstrate so much patience at writting pretty code!
+
+=item startpage VALUE
+
+Set the start page for the first output page to something other then
+1. Defaults to 1.
+
+=item author [ STRING ]
+
+STRING to use as Author entry in PDF Info Object. Defaults to userid (USER
+environment variable). If no STRING is specified then Author is left blank.
+
+=item subject [ STRING ]
+
+STRING to use as Subject entry in PDF Info Object. Blank by default.
+
+=item keywords [ STRING ]
+
+STRING to use as Keywords entry in PDF Info Object. Blank by default.
+
+=item font ( head1 | head2 | item | body | header | footer ) FONTNAME FONTSIZE
+
+Change the default font for various styles.
+
+I<This code is not yet written>.
+
+=item verbose VALUE
+
+Turns on verbose output to STDERR. Defaults to 1. Set to 0 for no STDERR output.
+Set to a value higher then 1 for extra debug information.
+
+=item dryRun ( true | false )
+
+Use for debugging of command files. Same as C<-n> command line
+switch. If true the command file is executed, however output is not
+generated, and input pod files are opened, scanned for pod contents,
+then closed without processing.
+
+Defaults to false.
+
+=back
+=head2 Title Commands
+
+These commands set various internal variables related to the titles
+used in the output file. They are normally used prior to opening the
+output file. However they may be used at any time in the command file
+as the need arises.
+
+On a body page there are three titles used in each of the running
+headers and footers. The header contains an outside, inside and
+centred title. The footer contains date and page numbers for the
+outside and inside titles (user cannot override this placement) and a
+centred title that is called the version title.
+
+By default the book title is used for the centred header title in the
+body, the title used in the PDF Info object, and the title used on the
+optional cover page. By default the local pod filename is used for the
+inside and outside header titles (called intitle and outtitle). To set
+the inside and outside header titles use the L<pod2ps/file>
+command. By default the version title is undefined.
+
+=over 8
+
+=item booktitle [ STRING ]
+
+STRING to use for book title. Also used on optional cover page and in
+PDF Info Object for Title entry when defined. Leave STRING blank if
+you want no book title to appear in the centre top of the running
+header. The default book title is 'User Contributed Perl
+Documentation'.
+
+Can occur anywhere in a command file (but normally only once prior to
+the L<pod2ps/output> command). As an example, if you want to use a
+title for the cover page and PDF Info Object but do not want a centred
+running header title, do the following:
+
+	booktitle 'Cover page title'
+	output myfile.ps
+	booktitle			# Clear book title
+
+=item official ( true | false )
+
+Shortcut to set the book title to 'Perl Programmers Reference Manual'
+if true and 'User Contributed Perl Documentation' if false. Default is
+false.
+
+	official true			# These two lines are equivalent
+	booktitle 'Perl Programmers Reference Manual'
+
+=item release [ STRING ]
+
+Title to use in centre of running footer. If not specified then no
+title is printed. The outside and inside margins of the running footer
+contain the page number and date respectively (this can not be
+overwritten at this time).
+
+This command can occur anywhere in a command file and applies to all
+subsequent output pages.
+
+=back
+=head2 File Commands
+=over 8
+
+=item path PATH
+
+Change current path. Remains in effect until next C<path> command. The
+path is initially set to the current working directory.
+
+This command can occur anywhere in a command file.
+
+=item output FILENAME
+
+Opens and outputs the PostScript header, cover page (if this option is
+selected) and PDF Info object.  FILENAME is the complete path/name of
+the output PostScript file. Should include .ps extension. Current path
+is used by default. The file is automatically closed at the end of the
+command file.
+
+This command is required and must occur prior to the first use of the
+L<pod2ps/file> command, and normally occurs after the use of most
+I<Option Commands>.
+
+=item file FILENAME
+=item file FILENAME TITLE
+=item file FILENAME MIDTITLE INTITLE OUTTITLE
+
+Read and parse the podfile FILENAME in the current directory and
+output it to the PostScript output file. The various forms of the
+L<pod2ps/file> command allow for titles in the running header to be
+set in different ways.
+
+In the first and second forms of the command the book title is used as
+centered title in the running header (as set by L<pod2ps/booktitle> or
+L<pod2ps/official>).
+
+In the third form the centered title is set to MIDTITLE. If MIDTITLE
+is '' (a null string) then the default is used, namely the book
+title. If MIDTITLE is S<' '> (a blank string) then the centered title
+is left blank.
+
+The second form sets the inside and outside justified running header
+titles to TITLE. The third form sets the inside and outside running
+header titles separately. If '' (a null string) then the default title
+is used. If ' ' (a string with blank text) then no title is printed.
+
+The default value for the centred running header title is the book
+title. The default value for the inside and outside justified running
+header title is the name of the file, with the terminating .pod or .pm
+extension stripped off.
+
+This command can be used only after L<pod2ps/output>.
+
+=back
+=head2 Bookmark Commands
+=over 8
+
+Bookmarks, also known as Outlines, are a feature of PDF. Refer to PDF
+documentation for more information.  Bookmarks are automatically
+generated for each pod file, head1, and head2. Bookmarks for item
+headings are generated only if there is a word of text on the item
+line (I<i.e.> no bookmarks are generated for bullet items).
+
+Additional levels of bookmarks can be defined using
+L<pod2ps/beginBookmark> and L<pod2ps/endBookmark> commands.  Bookmark
+commands can be interspersed with I<File Commands>.
+
+The data structure used to build up the list of bookmarks is also used
+to create a Table of Contents and Index, when L<pod2ps/toc> and
+L<pod2ps/index> commands are used.
+
+=item beginBookmark STRING [ LEVEL ]
+=item endBookmark
+
+Begins and ends a new level of PDF bookmark. Use this if you want to
+group several pod files under one bookmark. For example, all
+I<ExtUtils> pod file bookmarks could be lowered a level of bookmark
+hierarchy and given a parent bookmark title of STRING.
+
+Up to two additional levels of bookmark hierarchy can be defined.
+LEVEL defaults to 1. If you want a second level of bookmark (I<e.g.>
+you have a bookmark hierarchy such as 'User Modules' -E<gt> 'IOCtl'
+-E<gt> 'Base') then you need to begin the top level bookmark at LEVEL
+= 2, then begin a second bookmark at LEVEL = 1.
+
+L<pod2ps/endBookmark> will pop back up a level of bookmark.
+
+This command file example
+
+    file file0.pm
+    beginBookmark 'Core Modules' 2
+    file file1.pm
+    file file2.pm
+    beginBookmark MyUtils
+    file file3.pm
+    file file4.pm
+    endBookmark
+    file file5.pm
+    endBookmark   # ends 'Core Modules'
+    file file6.pm
+
+produces these bookmarks
+
+    file0
+    Core Modules
+        file1
+        file2
+        MyUtils
+            file3
+            file4
+        file5
+    file6
+
+=item bookmark ( head1 | head2 | item ) ( on | off )
+
+Turn on or off automatic bookmark generation for various levels of
+bookmark. Turning off bookmarks for a level will B<not> turn off
+bookmarks for lower levels of bookmarks, however this is probably what
+you actually want to happen, so be sure to do it, as shown in the
+second example below [results may otherwise not be predictable].
+
+This command only affects bookmark output to PostScript. During
+processing the bookmark data structure is still created. Table of
+Contents generation will therefore not be affected by this command.
+
+For example, to turn off output of C<=item> bookmark entries for an
+individual pod file, use the following command file syntax.
+
+	bookmark item off
+	file myFile
+	bookmark item on
+
+To turn off output of C<=head2> and lower bookmarks, use the following
+command file syntax.
+
+	bookmark item off
+	bookmark head2 off
+	file myFile
+	bookmark head2 on
+	bookmark item on
+
+=item oneWordItem ( true | false )
+
+Bookmarks for =item titles are reduced to their first word if true,
+otherwise the full line of the =item title is used for the bookmark
+title. As an example, this link L<pod2ps/oneWordItem> is written as
+
+	L<pod2ps/oneWordItem>
+	
+and will only work if C<oneWordItem> is set to true.
+
+Default value is false. I consider the whole business of creating
+links a bit flaky using the current L<perlpod> specification: the need
+for the <pod2ps/oneWordItem> command is a reflection of this.
+
+=back
+=head2 Link Commands
+
+Links are resolved from occurances of LE<lt>E<gt> in the pod file to
+create PDFMARKs for what are called I<Link Annotations> in a PDF file.
+
+=over 8
+
+=item linkBox ( [ ps ] [ pdf ] [ color ] ) | off )
+
+Useful for debugging. Default is for C<ps> and C<pdf> off, and
+C<color> to on.  When debugging, use L<pod2ps/verbose> to warn of
+unresolved links.
+
+If C<off> then clear C<ps>, C<pdf> and C<color>.
+
+If C<ps> then draw a box using PostScript drawing commands around
+where all potential links are located. This box is drawn regardless of
+whether the link can be resolved and an actual PDF link is
+created. This box will print.
+
+If C<pdf> then set the PDF border to be visible (a blue box around the
+link). This box is visible only in a PDF viewer, but does not print.
+A PDF link is created only if the link can be resolved.
+
+If C<color> then the link text is blue. This occurs regardless of
+whether the link can be resolved and an actual PDF link is created.
+
+The following two lines are equivalent:
+
+	linkBox ps off pdf		# ps is redundant before off
+	linkBox off pdf
+
+=back
+=head2 Closing Commands
+
+These commands should occur at the end of the file.
+
+=over 8
+
+=item toc LEVEL
+
+If specified then generate a Table of Contents. L<pod2ps/toc> should
+be executed after all pod files have been read and parsed - the
+implication being that the Table of Contents will appear at the end of
+the PostScript output (a limitation of one-pass compilation). LEVEL is
+how many levels of header to include in the index. 0 will include only
+the names of pod files and any bookmark hiearchy above that. 1 will
+include head1, 2 will include head2, 3 will include items.
+
+	toc 0		# Create table of contents with pod file names
+
+PDFMARK links are created for each entry in the Table of Contents.
+
+You can execute toc more then once. Default LEVEL is 0.
+
+=item index
+
+If specified then generate an Index that is sorted
+alphabetically. L<pod2ps/index> should be executed after all pod files
+have been read and parsed - the implication being that the index will
+appear at the end of the PostScript output (a limitation of one-pass
+compilation). The index is generated using the bookmark structure that
+is automatically created during command file processing. However only
+pod file head2 and item entries are output to the index (this seems
+like a reasonable use of an index to me).
+
+PDFMARK links are created for each entry in the Index.
+
+=back
+
+=head1 NOTES
+
+A I<PDF Info Object> contains information such as title, author and
+creation date for a file. pod2ps inserts PDFMARK operators into the
+PostScript output that will be recognised by the Adobe Acrobat
+Distiller as an Info object, and passed to the output PDF file. The
+Info Object information appears when you request I<File -E<gt> Document
+Info -E<gt> General> from the Adobe Acrobat PDF viewer.
+
+To include characters above decimal 127, use the syntax
+EE<lt>ltE<gt>. Supported entities are:
+        S< >
+        E<amp>	=  amp		E<lt>	=  lt		E<gt>	=  gt
+        E<quot>	=  quot		E<Aacute>	=  Aacute		E<aacute>	=  aacute
+        E<Acirc>	=  Acirc		E<acirc>	=  acirc		E<AElig>	=  AElig
+        E<aelig>	=  aelig		E<Agrave>	=  Agrave		E<agrave>	=  agrave
+        E<Aring>	=  Aring		E<aring>	=  aring		E<Atilde>	=  Atilde
+        E<atilde>	=  atilde		E<Auml>	=  Auml		E<auml>	=  auml
+        E<Ccedil>	=  Ccedil		E<ccedil>	=  ccedil		E<Eacute>	=  Eacute
+        E<eacute>	=  eacute		E<Ecirc>	=  Ecirc		E<ecirc>	=  ecirc
+        E<Egrave>	=  Egrave		E<egrave>	=  egrave		E<ETH>	=  ETH
+        E<eth>	=  eth		E<Euml>	=  Euml		E<euml>	=  euml
+        E<Iacute>	=  Iacute		E<iacute>	=  iacute		E<Icirc>	=  Icirc
+        E<icirc>	=  icirc		E<Igrave>	=  Igrave		E<igrave>	=  igrave
+        E<Iuml>	=  Iuml		E<iuml>	=  iuml		E<Ntilde>	=  Ntilde
+        E<ntilde>	=  ntilde		E<Oacute>	=  Oacute		E<oacute>	=  oacute
+        E<Ocirc>	=  Ocirc		E<ocirc>	=  ocirc		E<Ograve>	=  Ograve
+        E<ograve>	=  ograve		E<Oslash>	=  Oslash		E<oslash>	=  oslash
+        E<Otilde>	=  Otilde		E<otilde>	=  otilde		E<Ouml>	=  Ouml
+        E<ouml>	=  ouml		E<szlig>	=  szlig		E<THORN>	=  THORN
+        E<thorn>	=  thorn		E<Uacute>	=  Uacute		E<uacute>	=  uacute
+        E<Ucirc>	=  Ucirc		E<ucirc>	=  ucirc		E<Ugrave>	=  Ugrave
+        E<ugrave>	=  ugrave		E<Uuml>	=  Uuml		E<uuml>	=  uuml
+        E<Yacute>	=  Yacute		E<yacute>	=  yacute		E<yuml>	=  yuml
+
+pod2ps justifies text by extending the whitespace between words. If
+you want fancier typesetting use either L<pod2man> and I<troff>, or
+L<pod2fm>.
+
+As specified in L<perlpod>, blank lines in your pod file will end a
+paragraph. If a line that is part of a paragraph is indented with
+whitespace (spaces or tabs) then that line will be indented in the
+output and will I<not> be justified. Tabs inside a paragraph are
+treated as tabs. The following paragraph is an example that
+illustrates this behaviour.
+
+B<Example Input>
+
+  This is the beginning of a paragraph. The next line below has a tab as
+  the first character and contains a single, non-breaking space
+  character.
+  	S< >
+  	This line also has a tab as a first character. The next line begins with a tab, and tabs are used to separate each word.
+  	tab	tab	tab	tab	tab	tab
+  We are still in the same paragraph, but now the paragraph does not
+  begin with whitespace. This paragraph is justified.
+
+B<Example Output>
+
+This is the beginning of a paragraph. The next line below has a tab as
+the first character and contains a single, non-breaking space
+character.
+	S< >
+	This line also has a tab as a first character. The next line begins with a tab, and tabs are used to separate each word.
+	tab	tab	tab	tab	tab	tab
+We are still in the same paragraph, but now the paragraph does not
+begin with whitespace. This paragraph is justified.
+
+=head1 RESTRICTIONS
+
+You should not use 8-bit characters (characters above decimal 127) or
+characters below decimal 32 (space) in the input stream. The lower 31
+characters are used in the translator, and characters above 127 may
+not encode correctly. Escape any special characters using EE<lt>E<gt>.
+
+Links are a complicated business in pod files. I have managed to make
+most of the common links work, however they do not all work. In the
+PDF output files all potential links will be in blue (depending on how
+L<pod2ps/linkBox> is set). But they may not point anywhere. At this
+point in time it is just not worth my effort to get them all working.
+There really needs to be a more robust way of defining links in pod
+files before links can be fully implemented.
+
+=head1 SEE ALSO
+
+L<perlpod> - definition of POD (Plain Old Document) syntax.
+
+L<pod2man> - pod to man page converter, written by S<Larry Wall> and
+S<Tom Christiansen>.  Contains valuable information about how to
+structure your pod file. Another way to produce PostScript output, if
+used with I<troff>.
+
+L<pod2html> - pod to html converter, written by S<William Middleton>.
+
+L<pod2fm> - pod to Frame format converter. Another way to get to
+PostScript and PDF output, though using a few more steps (and requires
+that you own a copy of Adobe FrameMaker). Useful if you want to define
+custom paragraph and font styles, or want better typesetting. Written
+by S<Mark Pease> and S<Tim Bunce>.
+
+B<distill> - Adobe Acrobat Distiller, a commerical product that converts PostScript files to PDF (see L<http://www.adobe.com>). 
+
+L<ftp://ftp.adobe.com/pub/adobe/Applications/Acrobat/SDK/TECHDOC/PDFMARK.PDF> (165k) - Documentation for pdfmark.
+
+L<ftp://ftp.adobe.com/pub/adobe/Applications/Acrobat/SDK/TECHDOC/PDFSPEC.PDF> (1489k) - Documentation for PDF.
+
+=head1 AUTHOR
+
+Alan Fry L<mailto:ajf@afco.demon.co.uk> wrote the core code and
+maintains this program.
+
+Jim Pravetz L<mailto:jpravetz@adobe.com> added command file, unix and
+PDFMARK support.
+
+Report bugs to L<mailto:ajf@afco.demon.co.uk>.
+
+=head1 LAST MODIFIED
+
+7 August 1996 -- jpravetz

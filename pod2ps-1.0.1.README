@@ -1,0 +1,28 @@
+pod2ps - convert pod format to PostScript, with support for PDF
+
+Takes one or multiple perl POD files that follow the rules given in
+perlpod and produces a single PostScript file. pod2ps can be run on
+single or multiple files from the command line or using a command
+file.
+
+PostScript output includes PDFMARK operators that can be used by the
+commerically available Adobe Acrobat Distiller to produce a fully
+indexed PDF file.
+
+To see full man page in PostScript execute:
+
+pod2ps -o pod2ps.ps -shortitem pod2ps
+
+and then print pod2ps.ps, or distill to create pod2ps.pdf.
+
+The file pod2ps-1.0.1.gz contains
+	pod2ps-1.0.1 -- perl5 program, including pod documentation
+	pod2ps-1.0.1.README -- this README file
+	perlman.cmd -- example command file
+
+-- 
+Jim Pravetz                               -   ,__o
+Adobe Systems Inc., San Jose CA          -  _-\_<,
+mailto:jpravetz@mv.us.adobe.com            (*)/'(*)
+Co-authored with Alan J. Fry (mailto:ajf@afco.demon.co.uk). Report bugs
+to Alan J. Fry.
